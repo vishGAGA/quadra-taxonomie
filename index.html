@@ -329,7 +329,8 @@ async function showDetail(id){
     let html = `<div class="crumb">${esc(chain.join('  ›  '))}</div>
       <div class="d-title">${esc(n.denumire)}</div>
       <div class="d-sub"><span class="node-id">${esc(n.nod_id)}</span> ${badge(n.tip)}
-        <span>${esc(n.status_generare||'')}${n.status_inchidere?' · '+esc(n.status_inchidere):''}</span></div>`;
+        <span>${esc(n.status_generare||'')}${n.status_inchidere?' · '+esc(n.status_inchidere):''}</span>
+        ${EDIT?'<button class="btn mini" id="edit-texte">&#9998; editeaza textele</button>':''}</div>`;
     if(n.descriere) html += `<div class="section"><h3>Descriere</h3><p>${esc(n.descriere)}</p></div>`;
     const kv=[];
     if(n.sinonime) kv.push(`<b>Sinonime:</b> ${esc(n.sinonime)}`);
@@ -346,6 +347,7 @@ async function showDetail(id){
         bar.innerHTML = `<button class="btn" id="add-p-exist">+ ataseaza P existent</button><button class="btn primary" id="add-p-new">+ creeaza P nou</button>`;
         document.getElementById('add-p-exist').onclick = ()=> modalAtaseazaP(id);
         document.getElementById('add-p-new').onclick = ()=> modalCreeazaP(id);
+        const bt=document.getElementById('edit-texte'); if(bt) bt.onclick = ()=> modalEditeazaTexte(n);
       }
       const ps = await q(`/viz_leaf_p?leaf_id=eq.${encodeURIComponent(id)}&select=*&order=pozitie`);
       const plist = document.getElementById('p-list');
@@ -382,6 +384,7 @@ async function showDetail(id){
       });
     } else {
       detail.innerHTML = html;
+      if(EDIT){ const bt=document.getElementById('edit-texte'); if(bt) bt.onclick = ()=> modalEditeazaTexte(n); }
     }
   }catch(err){ detail.innerHTML='<div class="placeholder">Eroare: '+esc(err.message)+'</div>'; }
 }
@@ -492,6 +495,43 @@ function modalCreeazaP(leafId){
         toast('P nou creat si mapat: '+idn); showDetail(leafId);
       }catch(err){ toast(err.message, true); }
     });
+  };
+}
+
+// ---- Modal editare texte descriptive (orice nod: leaf sau categorie) ----
+function modalEditeazaTexte(n){
+  const m = showModal('Editeaza textele — '+esc(n.nod_id)+' '+esc(n.denumire), `
+    <div class="hint">Se salveaza doar campurile pe care le modifici. Reguli pastrate automat: descrierea unui leaf are minim 200 caractere (nod superior: minim 80), descrierea si criteriul nu pot fi identice cu ale unui frate, diacriticele se curata singure.</div>
+    <label>Descriere</label><textarea id="tx-d" rows="7"></textarea>
+    <label>Sinonime</label><textarea id="tx-s" rows="2"></textarea>
+    <label>Include</label><textarea id="tx-i" rows="3"></textarea>
+    <label>Exclude</label><textarea id="tx-e" rows="3"></textarea>
+    <label>Criteriu de asociere</label><textarea id="tx-c" rows="3"></textarea>`,
+    `<button class="btn" id="tx-cancel">renunta</button><button class="btn primary" id="tx-ok">salveaza</button>`);
+  m.querySelector('#tx-d').value = n.descriere||'';
+  m.querySelector('#tx-s').value = n.sinonime||'';
+  m.querySelector('#tx-i').value = n.include_||'';
+  m.querySelector('#tx-e').value = n.exclude_||'';
+  m.querySelector('#tx-c').value = n.criteriu_asociere||'';
+  m.querySelector('#tx-cancel').onclick = closeModal;
+  m.querySelector('#tx-ok').onclick = async ()=>{
+    const val = s => m.querySelector(s).value;
+    const chg = (v, old) => (v.trim() !== (old||'').trim()) ? v : null;
+    const args = {_nod:n.nod_id,
+      _descriere: chg(val('#tx-d'), n.descriere),
+      _sinonime:  chg(val('#tx-s'), n.sinonime),
+      _include:   chg(val('#tx-i'), n.include_),
+      _exclude:   chg(val('#tx-e'), n.exclude_),
+      _criteriu:  chg(val('#tx-c'), n.criteriu_asociere)};
+    if(args._descriere===null && args._sinonime===null && args._include===null && args._exclude===null && args._criteriu===null){
+      toast('Nimic modificat.'); closeModal(); return;
+    }
+    try{
+      const r = await rpc('edit_seteaza_descrieri', args);
+      toast(r); closeModal();
+      nodeCache[n.nod_id] = {nod_id:n.nod_id, parinte_id:n.parinte_id, tip:n.tip, denumire:n.denumire};
+      showDetail(n.nod_id);
+    }catch(err){ toast(err.message, true); }
   };
 }
 
