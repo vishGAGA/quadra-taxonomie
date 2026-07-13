@@ -355,10 +355,17 @@ async function showDetail(id){
         const item=document.createElement('div'); item.className='p-item';
         item.innerHTML=`<div class="p-head"><span class="p-caret">&#9654;</span>
           <span class="p-id">${esc(p.p_id)}</span><span>${esc(p.denumire)}</span>
-          <span class="p-um">${esc(p.um||'')}</span>${EDIT?`<button class="btn mini danger p-del" title="scoate P-ul de pe acest leaf">&#10005; scoate</button>`:''}</div>
+          <span class="p-um">${esc(p.um||'')}</span>${EDIT?`<button class="btn mini p-ren" title="redenumeste P-ul (se schimba pe TOATE leafurile)">&#9998;</button><button class="btn mini danger p-del" title="scoate P-ul de pe acest leaf">&#10005; scoate</button>`:''}</div>
           <div class="prm-list"><div class="loading">...</div></div>`;
         const head=item.querySelector('.p-head'), list=item.querySelector('.prm-list'), caret=item.querySelector('.p-caret');
         if(EDIT){
+          item.querySelector('.p-ren').addEventListener('click', async (e)=>{
+            e.stopPropagation();
+            const v = prompt(`Denumire noua pentru ${p.p_id} (se propaga automat pe TOATE leafurile care il folosesc; denumirea veche ramane sinonim):`, p.denumire);
+            if(!v || v.trim()===p.denumire) return;
+            try{ const r = await rpc('edit_redenumeste_p',{_p:p.p_id,_denumire_noua:v}); toast(r); showDetail(id); }
+            catch(err){ toast(err.message, true); }
+          });
           item.querySelector('.p-del').addEventListener('click', async (e)=>{
             e.stopPropagation();
             if(!confirm(`Scot ${p.p_id} "${p.denumire}" de pe leaf-ul ${id}?\n(P-ul ramane in dictionar; parametrii perechii se sterg)`)) return;
