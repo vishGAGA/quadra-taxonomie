@@ -133,9 +133,17 @@ async function q(path){
   return r.json();
 }
 let PIN = localStorage.getItem('quadra_pin') || '';
+function cerePin(){
+  const v = (prompt('PIN de editare (protejeaza scrierile in baza):')||'').trim();
+  if(v){ PIN = v; localStorage.setItem('quadra_pin', v); }
+  return v;
+}
 async function rpc(fn, args){
   const a = Object.assign({}, args||{});
-  if(fn.indexOf('edit_')===0 && fn.indexOf('edit_cauta')!==0) a._pin = PIN;
+  if(fn.indexOf('edit_')===0 && fn.indexOf('edit_cauta')!==0){
+    if(!PIN && !cerePin()) throw new Error('Operatiunea are nevoie de PIN-ul de editare.');
+    a._pin = PIN;
+  }
   const r = await fetch(`${SB_URL}/rpc/${fn}`, { method:'POST', headers:{...HDRS,'Content-Type':'application/json'}, body: JSON.stringify(a) });
   const txt = await r.text();
   if(!r.ok){
@@ -150,12 +158,8 @@ async function rpc(fn, args){
 let EDIT = false, currentId = null;
 const editToggle = document.getElementById('edit-toggle');
 editToggle.addEventListener('change', ()=>{
-  if(editToggle.checked && !PIN){
-    const v = prompt('PIN de editare (scrierile in baza sunt protejate):');
-    if(!v){ editToggle.checked = false; return; }
-    PIN = v.trim(); localStorage.setItem('quadra_pin', PIN);
-  }
   EDIT = editToggle.checked;
+  if(EDIT && !PIN) cerePin(); // optional aici; oricum se cere automat la prima scriere
   document.getElementById('edit-switch').classList.toggle('on', EDIT);
   if(currentId) showDetail(currentId);
 });
