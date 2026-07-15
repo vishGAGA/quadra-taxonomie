@@ -102,6 +102,16 @@
   #toast{position:fixed; bottom:18px; right:18px; z-index:99; display:flex; flex-direction:column; gap:8px; align-items:flex-end;}
   .toast-item{background:#052e1c; border:1px solid #34d399; color:#d1fae5; font-size:12.5px; padding:9px 14px; border-radius:9px; max-width:420px; box-shadow:0 8px 24px rgba(0,0,0,.4);}
   .toast-item.err{background:#450a0a; border-color:#f87171; color:#fecaca;}
+  /* Nomenclatoare */
+  .modes{display:flex; gap:4px; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:3px; flex-shrink:0;}
+  .mode-btn{border:none; background:transparent; color:var(--muted); font-size:12px; padding:5px 11px; border-radius:6px; cursor:pointer; white-space:nowrap;}
+  .mode-btn:hover{color:var(--text);}
+  .mode-btn.active{background:var(--panel2); color:var(--accent); font-weight:600;}
+  #nom-list{display:none; padding:6px 6px 40px;}
+  .nom-item{display:flex; align-items:center; gap:9px; padding:6px 10px; border-radius:6px; cursor:pointer; font-size:12.5px; border-bottom:1px solid #1c2942;}
+  .nom-item:hover{background:var(--panel2);}
+  .nom-den{flex:1; min-width:0;}
+  .nom-cnt{font-size:10.5px; color:var(--muted); flex-shrink:0; background:#1c2942; padding:1px 7px; border-radius:9px;}
   ::-webkit-scrollbar{width:10px;} ::-webkit-scrollbar-thumb{background:#334155; border-radius:6px;} ::-webkit-scrollbar-track{background:transparent;}
   @media (max-width:860px){ main{flex-direction:column;} #tree-pane{width:100%; height:45%; border-right:none; border-bottom:1px solid var(--border);} }
 </style>
@@ -109,6 +119,11 @@
 <body>
 <header>
   <h1>QUADRA &mdash; Taxonomie categorii de constructii</h1>
+  <div class="modes">
+    <button class="mode-btn active" data-m="tree">Arbore</button>
+    <button class="mode-btn" data-m="p">Nomenclator P</button>
+    <button class="mode-btn" data-m="prm">Parametri</button>
+  </div>
   <input id="search" type="text" placeholder="Cauta dupa denumire sau ID (min 3 caractere)..." autocomplete="off">
   <span class="stats" id="stats">se incarca...</span>
   <label class="editswitch" id="edit-switch"><input type="checkbox" id="edit-toggle"> Editare</label>
@@ -119,6 +134,7 @@
   <div id="tree-pane">
     <div id="search-results"></div>
     <div id="tree-root"></div>
+    <div id="nom-list"></div>
   </div>
   <div id="detail-pane"><div class="placeholder">&#9668; Selecteaza un nod din arbore pentru a vedea detaliile.<br><br>Extinde cu sagetile, cauta sus, iar la leafuri da click pe un P pentru parametri.</div></div>
 </main>
@@ -155,13 +171,19 @@ async function rpc(fn, args){
   try{ return JSON.parse(txt); }catch(e){ return txt; }
 }
 // ---- Editare: stare + utilitare UI ----
-let EDIT = false, currentId = null;
+let EDIT = false, currentId = null, MODE = 'tree', currentView = null;
+function rerenderCurrent(){
+  if(!currentView) return;
+  if(currentView.type==='node') showDetail(currentView.id);
+  else if(currentView.type==='p') showPDetail(currentView.id);
+  else if(currentView.type==='prm') showPrmDetail(currentView.id);
+}
 const editToggle = document.getElementById('edit-toggle');
 editToggle.addEventListener('change', ()=>{
   EDIT = editToggle.checked;
   if(EDIT && !PIN) cerePin(); // optional aici; oricum se cere automat la prima scriere
   document.getElementById('edit-switch').classList.toggle('on', EDIT);
-  if(currentId) showDetail(currentId);
+  rerenderCurrent();
 });
 function toast(msg, isErr){
   const t=document.createElement('div'); t.className='toast-item'+(isErr?' err':''); t.textContent=msg;
@@ -306,7 +328,7 @@ function selectNode(row, id){
 }
 
 async function showDetail(id){
-  currentId = id;
+  currentId = id; currentView = {type:'node', id};
   detail.innerHTML = '<div class="placeholder">se incarca...</div>';
   try{
     let n = nodeCache[id];
@@ -539,6 +561,140 @@ function modalEditeazaTexte(n){
   };
 }
 
+// ================= NOMENCLATOARE (P-uri si Parametri) =================
+const nomList = document.getElementById('nom-list');
+function setMode(m){
+  MODE = m;
+  document.querySelectorAll('.mode-btn').forEach(b=> b.classList.toggle('active', b.dataset.m===m));
+  const treeMode = m==='tree';
+  treeRoot.style.display = treeMode ? 'block' : 'none';
+  if(!treeMode) searchResults.style.display='none';
+  nomList.style.display = treeMode ? 'none' : 'block';
+  document.getElementById('search').value='';
+  document.getElementById('search').placeholder = treeMode ? 'Cauta dupa denumire sau ID (min 3 caractere)...'
+    : (m==='p' ? 'Cauta P dupa denumire, sinonim sau PU-...' : 'Cauta parametru dupa denumire sau PRM-...');
+  if(treeMode){ nomList.innerHTML=''; } else { renderNomList(''); }
+}
+document.querySelectorAll('.mode-btn').forEach(b=> b.onclick = ()=> setMode(b.dataset.m));
+
+async function renderNomList(v){
+  nomList.innerHTML = '<div class="loading">se incarca...</div>';
+  try{
+    if(MODE==='p'){
+      const e=encodeURIComponent('%'+v+'%');
+      const flt = v ? `&or=(denumire.ilike.${e},sinonime.ilike.${e},p_id.ilike.${e})` : '';
+      const rows = await q(`/viz_p_nomenclator?select=p_id,denumire,um,nr_leafuri&order=p_id${flt}&limit=400`);
+      nomList.innerHTML = `<div class="sr-count">${rows.length} P-uri${rows.length===400?' (primele 400 — rafineaza cautarea)':''}</div>` +
+        rows.map(r=>`<div class="nom-item" data-id="${esc(r.p_id)}"><span class="p-id">${esc(r.p_id)}</span><span class="nom-den">${esc(r.denumire)}</span><span class="p-um">${esc(r.um||'')}</span><span class="nom-cnt">${r.nr_leafuri} leaf</span></div>`).join('');
+      nomList.querySelectorAll('.nom-item').forEach(el=> el.onclick = ()=> showPDetail(el.dataset.id));
+    } else {
+      const e=encodeURIComponent('%'+v+'%');
+      const flt = v ? `&or=(denumire.ilike.${e},prm_id.ilike.${e})` : '';
+      const rows = await q(`/viz_prm_nomenclator?select=prm_id,denumire,tip,nr_utilizari&order=prm_id${flt}&limit=400`);
+      nomList.innerHTML = `<div class="sr-count">${rows.length} parametri${rows.length===400?' (primii 400 — rafineaza cautarea)':''}</div>` +
+        rows.map(r=>`<div class="nom-item" data-id="${esc(r.prm_id)}"><span class="prm-id">${esc(r.prm_id)}</span><span class="nom-den">${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span><span class="nom-cnt">${r.nr_utilizari}x</span></div>`).join('');
+      nomList.querySelectorAll('.nom-item').forEach(el=> el.onclick = ()=> showPrmDetail(el.dataset.id));
+    }
+  }catch(err){ nomList.innerHTML='<div class="loading">eroare: '+esc(err.message)+'</div>'; }
+}
+
+async function showPDetail(pId){
+  currentView = {type:'p', id:pId};
+  detail.innerHTML = '<div class="placeholder">se incarca...</div>';
+  try{
+    const d = await rpc('viz_p_info',{_p:pId});
+    let html = `<div class="crumb">Nomenclator P-uri</div>
+      <div class="d-title">${esc(d.denumire)}</div>
+      <div class="d-sub"><span class="p-id">${esc(d.p_id)}</span><span class="p-um">${esc(d.um||'')}</span>
+        <span>pe ${d.nr_leafuri} leafuri · ${d.nr_perechi} perechi</span>
+        ${EDIT?`<button class="btn mini" id="p-ren2">&#9998; redenumeste</button><button class="btn mini" id="p-um2">UM</button><button class="btn mini" id="p-sin2">sinonime</button>`:''}</div>`;
+    if(d.origine) html += `<div class="hint">origine: ${esc(d.origine)}</div>`;
+    html += `<div class="section"><h3>Parametri (pe cate perechi apar)</h3><div id="pp-list"></div>${EDIT?'<div class="editbar" style="margin-top:10px"><button class="btn" id="pp-add">+ adauga parametru pe TOATE perechile</button></div>':''}</div>`;
+    html += `<div class="section"><h3>Leafuri care folosesc acest P (${d.nr_leafuri})</h3><div id="pl-list"></div></div>`;
+    detail.innerHTML = html;
+    const ppl = document.getElementById('pp-list');
+    ppl.innerHTML = (d.parametri||[]).length ? d.parametri.map(p=>
+      `<div class="prm-item"><span class="prm-name">${esc(p.denumire)}</span><span class="prm-id">${esc(p.prm_id)}</span> <span class="nom-cnt">pe ${p.nr}/${d.nr_perechi}</span>${EDIT?`<button class="btn mini danger" style="margin-left:8px" data-prm="${esc(p.prm_id)}">&#10005; scoate de pe toate</button>`:''}</div>`).join('')
+      : '<div class="loading">fara parametri</div>';
+    const pll = document.getElementById('pl-list');
+    pll.innerHTML = (d.leafuri||[]).map(l=>
+      `<div class="nom-item" data-leaf="${esc(l.leaf_id)}"><span class="node-id">${esc(l.leaf_id)}</span><span class="nom-den">${esc(l.denumire)}</span></div>`).join('') || '<div class="loading">-</div>';
+    pll.querySelectorAll('.nom-item').forEach(el=> el.onclick = ()=>{ setMode('tree'); showDetail(el.dataset.leaf); });
+    if(EDIT){
+      document.getElementById('p-ren2').onclick = async ()=>{
+        const v = prompt(`Denumire noua pentru ${d.p_id} (se propaga pe TOATE leafurile; vechea ramane sinonim):`, d.denumire);
+        if(!v || v.trim()===d.denumire) return;
+        try{ toast(await rpc('edit_redenumeste_p',{_p:d.p_id,_denumire_noua:v})); showPDetail(pId); }catch(err){ toast(err.message,true); }
+      };
+      document.getElementById('p-um2').onclick = async ()=>{
+        const v = prompt('UM noua (mp / ml / mc / buc / kg / set):', d.um||'');
+        if(!v) return;
+        try{ toast(await rpc('edit_p_seteaza_um',{_p:d.p_id,_um:v})); showPDetail(pId); }catch(err){ toast(err.message,true); }
+      };
+      document.getElementById('p-sin2').onclick = async ()=>{
+        const v = prompt('Sinonime pentru '+d.p_id+' (separate cu ; ; inlocuiesc lista curenta):', '');
+        if(v===null) return;
+        try{ toast(await rpc('edit_p_seteaza_sinonime',{_p:d.p_id,_sinonime:v})); showPDetail(pId); }catch(err){ toast(err.message,true); }
+      };
+      ppl.querySelectorAll('[data-prm]').forEach(b=> b.onclick = async ()=>{
+        if(!confirm(`Scot parametrul ${b.dataset.prm} de pe TOATE perechile lui ${d.p_id}?\n(perechile care ar ramane sub 2 parametri sunt sarite)`)) return;
+        try{ toast(await rpc('edit_p_sterge_prm_global',{_p:d.p_id,_prm:b.dataset.prm})); showPDetail(pId); }catch(err){ toast(err.message,true); }
+      });
+      const addb=document.getElementById('pp-add');
+      if(addb) addb.onclick = ()=>{
+        const m = showModal('Adauga parametru pe toate perechile lui '+d.p_id, `
+          <div class="hint">Se adauga pe fiecare pereche (leaf,P) care nu-l are deja si are sub 14 parametri.</div>
+          <label>Cauta in dictionarul PRM</label><input type="text" id="pg-q" placeholder="denumire sau PRM-...">
+          <div class="m-results" id="pg-res"></div>`);
+        wireSearch(m.querySelector('#pg-q'), m.querySelector('#pg-res'),
+          val=>rpc('edit_cauta_prm',{q:val}),
+          r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
+          async r=>{ try{ closeModal(); toast(await rpc('edit_p_adauga_prm_global',{_p:d.p_id,_prm:r.prm_id})); showPDetail(pId); }catch(err){ toast(err.message,true); } });
+      };
+    }
+  }catch(err){ detail.innerHTML='<div class="placeholder">Eroare: '+esc(err.message)+'</div>'; }
+}
+
+async function showPrmDetail(prmId){
+  currentView = {type:'prm', id:prmId};
+  detail.innerHTML = '<div class="placeholder">se incarca...</div>';
+  try{
+    const d = await rpc('viz_prm_info',{_prm:prmId});
+    let html = `<div class="crumb">Nomenclator parametri</div>
+      <div class="d-title">${esc(d.denumire)}</div>
+      <div class="d-sub"><span class="prm-id">${esc(d.prm_id)}</span><span class="prm-tip">${esc(d.tip||'')}</span>${d.um?`<span class="p-um">${esc(d.um)}</span>`:''}
+        <span>folosit de ${d.nr_utilizari} ori</span>
+        ${EDIT?`<button class="btn mini" id="prm-ren2">&#9998; redenumeste</button><button class="btn mini" id="prm-val2">editeaza valorile</button>`:''}</div>`;
+    html += `<div class="section"><h3>Valori posibile</h3><div class="txt">${esc(d.valori_lista||'-')}</div></div>`;
+    if(d.sinonime) html += `<div class="section"><h3>Sinonime</h3><div class="txt">${esc(d.sinonime)}</div></div>`;
+    html += `<div class="section"><h3>P-uri care folosesc acest parametru (${(d.puri||[]).length})</h3><div id="pu-list"></div></div>`;
+    detail.innerHTML = html;
+    const pul = document.getElementById('pu-list');
+    pul.innerHTML = (d.puri||[]).map(p=>
+      `<div class="nom-item" data-p="${esc(p.p_id)}"><span class="p-id">${esc(p.p_id)}</span><span class="nom-den">${esc(p.denumire)}</span><span class="nom-cnt">${p.nr}x</span></div>`).join('') || '<div class="loading">-</div>';
+    pul.querySelectorAll('.nom-item').forEach(el=>{ const pid=el.dataset.p; el.onclick = ()=>{ setMode('p'); showPDetail(pid); }; });
+    if(EDIT){
+      document.getElementById('prm-ren2').onclick = async ()=>{
+        const v = prompt(`Denumire noua pentru ${d.prm_id} (se propaga pe toate perechile; vechea ramane sinonim):`, d.denumire);
+        if(!v || v.trim()===d.denumire) return;
+        try{ toast(await rpc('edit_redenumeste_prm',{_prm:d.prm_id,_denumire_noua:v})); showPrmDetail(prmId); }catch(err){ toast(err.message,true); }
+      };
+      document.getElementById('prm-val2').onclick = ()=>{
+        const m = showModal('Editeaza valorile — '+esc(d.prm_id), `
+          <div class="hint">Inlocuieste complet lista de valori (separate cu / ). La 'lista deschisa' se pastreaza automat optiunea "alta valoare".</div>
+          <label>Valori</label><textarea id="pv-t" rows="4"></textarea>`,
+          `<button class="btn" id="pv-cancel">renunta</button><button class="btn primary" id="pv-ok">salveaza</button>`);
+        m.querySelector('#pv-t').value = d.valori_lista||'';
+        m.querySelector('#pv-cancel').onclick = closeModal;
+        m.querySelector('#pv-ok').onclick = async ()=>{
+          const nv = m.querySelector('#pv-t').value; closeModal();
+          try{ toast(await rpc('edit_prm_seteaza_valori',{_prm:d.prm_id,_valori:nv})); showPrmDetail(prmId); }catch(err){ toast(err.message,true); }
+        };
+      };
+    }
+  }catch(err){ detail.innerHTML='<div class="placeholder">Eroare: '+esc(err.message)+'</div>'; }
+}
+
 // Cautare
 const searchBox=document.getElementById('search');
 const searchResults=document.getElementById('search-results');
@@ -546,6 +702,7 @@ let searchTimer=null;
 searchBox.addEventListener('input', ()=>{
   clearTimeout(searchTimer);
   const v=searchBox.value.trim();
+  if(MODE!=='tree'){ searchTimer=setTimeout(()=>renderNomList(v), 280); return; }
   if(v.length<3){ searchResults.style.display='none'; treeRoot.style.display='block'; return; }
   searchTimer=setTimeout(()=>doSearch(v), 300);
 });
