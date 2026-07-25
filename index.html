@@ -183,6 +183,7 @@ editToggle.addEventListener('change', ()=>{
   EDIT = editToggle.checked;
   if(EDIT && !PIN) cerePin(); // optional aici; oricum se cere automat la prima scriere
   document.getElementById('edit-switch').classList.toggle('on', EDIT);
+  if(MODE!=='tree') renderNomList(document.getElementById('search').value.trim());
   rerenderCurrent();
 });
 function toast(msg, isErr){
@@ -584,16 +585,20 @@ async function renderNomList(v){
       const e=encodeURIComponent('%'+v+'%');
       const flt = v ? `&or=(denumire.ilike.${e},sinonime.ilike.${e},p_id.ilike.${e})` : '';
       const rows = await q(`/viz_p_nomenclator?select=p_id,denumire,um,nr_leafuri&order=p_id${flt}&limit=400`);
-      nomList.innerHTML = `<div class="sr-count">${rows.length} P-uri${rows.length===400?' (primele 400 — rafineaza cautarea)':''}</div>` +
+      const barP = EDIT ? '<div class="editbar" style="padding:2px 4px 6px"><button class="btn primary" id="nom-new-p">+ creeaza P nou (alegi intai leaf-ul)</button></div>' : '';
+      nomList.innerHTML = barP + `<div class="sr-count">${rows.length} P-uri${rows.length===400?' (primele 400 — rafineaza cautarea)':''}</div>` +
         rows.map(r=>`<div class="nom-item" data-id="${esc(r.p_id)}"><span class="p-id">${esc(r.p_id)}</span><span class="nom-den">${esc(r.denumire)}</span><span class="p-um">${esc(r.um||'')}</span><span class="nom-cnt">${r.nr_leafuri} leaf</span></div>`).join('');
       nomList.querySelectorAll('.nom-item').forEach(el=> el.onclick = ()=> showPDetail(el.dataset.id));
+      const bnp=document.getElementById('nom-new-p'); if(bnp) bnp.onclick = modalCreeazaPDinNomenclator;
     } else {
       const e=encodeURIComponent('%'+v+'%');
       const flt = v ? `&or=(denumire.ilike.${e},prm_id.ilike.${e})` : '';
       const rows = await q(`/viz_prm_nomenclator?select=prm_id,denumire,tip,nr_utilizari&order=prm_id${flt}&limit=400`);
-      nomList.innerHTML = `<div class="sr-count">${rows.length} parametri${rows.length===400?' (primii 400 — rafineaza cautarea)':''}</div>` +
+      const barR = EDIT ? '<div class="editbar" style="padding:2px 4px 6px"><button class="btn primary" id="nom-new-prm">+ creeaza parametru NOU in dictionar</button></div>' : '';
+      nomList.innerHTML = barR + `<div class="sr-count">${rows.length} parametri${rows.length===400?' (primii 400 — rafineaza cautarea)':''}</div>` +
         rows.map(r=>`<div class="nom-item" data-id="${esc(r.prm_id)}"><span class="prm-id">${esc(r.prm_id)}</span><span class="nom-den">${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span><span class="nom-cnt">${r.nr_utilizari}x</span></div>`).join('');
       nomList.querySelectorAll('.nom-item').forEach(el=> el.onclick = ()=> showPrmDetail(el.dataset.id));
+      const bnr=document.getElementById('nom-new-prm'); if(bnr) bnr.onclick = modalCreeazaPrmDictionar;
     }
   }catch(err){ nomList.innerHTML='<div class="loading">eroare: '+esc(err.message)+'</div>'; }
 }
@@ -610,7 +615,7 @@ async function showPDetail(pId){
         ${EDIT?`<button class="btn mini" id="p-ren2">&#9998; redenumeste</button><button class="btn mini" id="p-um2">UM</button><button class="btn mini" id="p-sin2">sinonime</button>`:''}</div>`;
     if(d.origine) html += `<div class="hint">origine: ${esc(d.origine)}</div>`;
     html += `<div class="section"><h3>Parametri (pe cate perechi apar)</h3><div id="pp-list"></div>${EDIT?'<div class="editbar" style="margin-top:10px"><button class="btn" id="pp-add">+ adauga parametru pe TOATE perechile</button></div>':''}</div>`;
-    html += `<div class="section"><h3>Leafuri care folosesc acest P (${d.nr_leafuri})</h3><div id="pl-list"></div></div>`;
+    html += `<div class="section"><h3>Leafuri care folosesc acest P (${d.nr_leafuri})</h3>${EDIT?'<div class="editbar"><button class="btn" id="pl-add">+ ataseaza P-ul pe un leaf nou</button></div>':''}<div id="pl-list"></div></div>`;
     detail.innerHTML = html;
     const ppl = document.getElementById('pp-list');
     ppl.innerHTML = (d.parametri||[]).length ? d.parametri.map(p=>
@@ -618,8 +623,17 @@ async function showPDetail(pId){
       : '<div class="loading">fara parametri</div>';
     const pll = document.getElementById('pl-list');
     pll.innerHTML = (d.leafuri||[]).map(l=>
-      `<div class="nom-item" data-leaf="${esc(l.leaf_id)}"><span class="node-id">${esc(l.leaf_id)}</span><span class="nom-den">${esc(l.denumire)}</span></div>`).join('') || '<div class="loading">-</div>';
-    pll.querySelectorAll('.nom-item').forEach(el=> el.onclick = ()=>{ setMode('tree'); showDetail(el.dataset.leaf); });
+      `<div class="nom-item" data-leaf="${esc(l.leaf_id)}"><span class="node-id">${esc(l.leaf_id)}</span><span class="nom-den">${esc(l.denumire)}</span>${EDIT?'<button class="btn mini danger pl-del" title="scoate P-ul de pe acest leaf">&#10005;</button>':''}</div>`).join('') || '<div class="loading">-</div>';
+    pll.querySelectorAll('.nom-item').forEach(el=>{
+      const lid = el.dataset.leaf;
+      el.onclick = ()=>{ setMode('tree'); showDetail(lid); };
+      const del = el.querySelector('.pl-del');
+      if(del) del.onclick = async (e)=>{
+        e.stopPropagation();
+        if(!confirm(`Scot ${d.p_id} de pe leaf-ul ${lid}?\n(parametrii perechii se sterg; P-ul ramane in dictionar)`)) return;
+        try{ toast(await rpc('edit_sterge_p_de_pe_leaf',{_leaf:lid,_p:d.p_id})); showPDetail(pId); }catch(err){ toast(err.message,true); }
+      };
+    });
     if(EDIT){
       document.getElementById('p-ren2').onclick = async ()=>{
         const v = prompt(`Denumire noua pentru ${d.p_id} (se propaga pe TOATE leafurile; vechea ramane sinonim):`, d.denumire);
@@ -651,6 +665,8 @@ async function showPDetail(pId){
           r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
           async r=>{ try{ closeModal(); toast(await rpc('edit_p_adauga_prm_global',{_p:d.p_id,_prm:r.prm_id})); showPDetail(pId); }catch(err){ toast(err.message,true); } });
       };
+      const plb=document.getElementById('pl-add');
+      if(plb) plb.onclick = ()=> modalAtaseazaLeafPeP(d.p_id);
     }
   }catch(err){ detail.innerHTML='<div class="placeholder">Eroare: '+esc(err.message)+'</div>'; }
 }
@@ -667,12 +683,34 @@ async function showPrmDetail(prmId){
         ${EDIT?`<button class="btn mini" id="prm-ren2">&#9998; redenumeste</button><button class="btn mini" id="prm-val2">editeaza valorile</button>`:''}</div>`;
     html += `<div class="section"><h3>Valori posibile</h3><div class="txt">${esc(d.valori_lista||'-')}</div></div>`;
     if(d.sinonime) html += `<div class="section"><h3>Sinonime</h3><div class="txt">${esc(d.sinonime)}</div></div>`;
-    html += `<div class="section"><h3>P-uri care folosesc acest parametru (${(d.puri||[]).length})</h3><div id="pu-list"></div></div>`;
+    html += `<div class="section"><h3>P-uri care folosesc acest parametru (${(d.puri||[]).length})</h3>${EDIT?'<div class="editbar"><button class="btn" id="pu-add">+ ataseaza parametrul pe un P</button></div>':''}<div id="pu-list"></div></div>`;
     detail.innerHTML = html;
     const pul = document.getElementById('pu-list');
     pul.innerHTML = (d.puri||[]).map(p=>
-      `<div class="nom-item" data-p="${esc(p.p_id)}"><span class="p-id">${esc(p.p_id)}</span><span class="nom-den">${esc(p.denumire)}</span><span class="nom-cnt">${p.nr}x</span></div>`).join('') || '<div class="loading">-</div>';
-    pul.querySelectorAll('.nom-item').forEach(el=>{ const pid=el.dataset.p; el.onclick = ()=>{ setMode('p'); showPDetail(pid); }; });
+      `<div class="nom-item" data-p="${esc(p.p_id)}"><span class="p-id">${esc(p.p_id)}</span><span class="nom-den">${esc(p.denumire)}</span><span class="nom-cnt">${p.nr}x</span>${EDIT?'<button class="btn mini danger pu-del" title="scoate parametrul de pe toate perechile acestui P">&#10005;</button>':''}</div>`).join('') || '<div class="loading">-</div>';
+    pul.querySelectorAll('.nom-item').forEach(el=>{
+      const pid=el.dataset.p;
+      el.onclick = ()=>{ setMode('p'); showPDetail(pid); };
+      const del = el.querySelector('.pu-del');
+      if(del) del.onclick = async (e)=>{
+        e.stopPropagation();
+        if(!confirm(`Scot ${d.prm_id} de pe TOATE perechile lui ${pid}?\n(perechile care ar ramane sub 2 parametri sunt sarite)`)) return;
+        try{ toast(await rpc('edit_p_sterge_prm_global',{_p:pid,_prm:d.prm_id})); showPrmDetail(prmId); }catch(err){ toast(err.message,true); }
+      };
+    });
+    if(EDIT){
+      const pub=document.getElementById('pu-add');
+      if(pub) pub.onclick = ()=>{
+        const m = showModal('Ataseaza '+esc(d.prm_id)+' pe un P', `
+          <div class="hint">Parametrul se adauga pe TOATE perechile (leaf,P) ale P-ului ales care nu-l au deja si au sub 14 parametri.</div>
+          <label>Cauta P</label><input type="text" id="pa-q" placeholder="denumire, sinonim sau PU-...">
+          <div class="m-results" id="pa-res"></div>`);
+        wireSearch(m.querySelector('#pa-q'), m.querySelector('#pa-res'),
+          v=>rpc('edit_cauta_p',{q:v}),
+          r=>`<div class="sr-item"><span class="node-id">${esc(r.p_id)}</span><span>${esc(r.denumire)}</span><span class="p-um">${esc(r.um||'')}</span></div>`,
+          async r=>{ try{ closeModal(); toast(await rpc('edit_p_adauga_prm_global',{_p:r.p_id,_prm:d.prm_id})); showPrmDetail(prmId); }catch(err){ toast(err.message,true); } });
+      };
+    }
     if(EDIT){
       document.getElementById('prm-ren2').onclick = async ()=>{
         const v = prompt(`Denumire noua pentru ${d.prm_id} (se propaga pe toate perechile; vechea ramane sinonim):`, d.denumire);
@@ -693,6 +731,66 @@ async function showPrmDetail(prmId){
       };
     }
   }catch(err){ detail.innerHTML='<div class="placeholder">Eroare: '+esc(err.message)+'</div>'; }
+}
+
+// ---- Modale nomenclator: asocieri din sens invers + creare din dictionar ----
+function cautaLeafuri(v){
+  const e=encodeURIComponent('%'+v+'%');
+  return q(`/viz_noduri?tip=eq.leaf&or=(denumire.ilike.${e},nod_id.ilike.${e})&select=nod_id,denumire&limit=40`);
+}
+function modalAtaseazaLeafPeP(pId){
+  const m = showModal('Ataseaza '+esc(pId)+' pe un leaf', `
+    <div class="hint">Cauta leaf-ul dupa denumire sau ID. Parametrii perechii se mostenesc automat de la cel mai folosit leaf al P-ului; daca P-ul nu are de unde mosteni, ti se cere sa alegi minim 2.</div>
+    <label>Cauta leaf</label><input type="text" id="lf-q" placeholder="denumire sau ID (ex: ARH.03...)">
+    <div class="m-results" id="lf-res"></div>`);
+  wireSearch(m.querySelector('#lf-q'), m.querySelector('#lf-res'),
+    cautaLeafuri,
+    r=>`<div class="sr-item"><span class="node-id">${esc(r.nod_id)}</span><span>${esc(r.denumire)}</span></div>`,
+    async r=>{
+      try{
+        const res = await rpc('edit_adauga_p_pe_leaf',{_leaf:r.nod_id,_p:pId,_prms:null});
+        closeModal(); toast(pId+' atasat pe '+r.nod_id+': '+res); showPDetail(pId);
+      }catch(err){
+        if(err.message.indexOf('ALEGE_PARAMETRI')>=0){
+          closeModal();
+          pickParams('Alege parametrii pentru '+pId+' pe '+r.nod_id, async ids=>{
+            try{ const res = await rpc('edit_adauga_p_pe_leaf',{_leaf:r.nod_id,_p:pId,_prms:ids});
+              toast(pId+' atasat: '+res); showPDetail(pId);
+            }catch(e2){ toast(e2.message, true); }
+          });
+        } else toast(err.message, true);
+      }
+    });
+}
+function modalCreeazaPDinNomenclator(){
+  const m = showModal('Creeaza P nou — pasul 1: alege leaf-ul', `
+    <div class="hint">Un P nou se naste intotdeauna pe un leaf (altfel ar ramane orfan, fara loc in taxonomie). Cauta leaf-ul, apoi completezi denumirea, UM-ul si parametrii.</div>
+    <label>Cauta leaf</label><input type="text" id="cl-q" placeholder="denumire sau ID...">
+    <div class="m-results" id="cl-res"></div>`);
+  wireSearch(m.querySelector('#cl-q'), m.querySelector('#cl-res'),
+    cautaLeafuri,
+    r=>`<div class="sr-item"><span class="node-id">${esc(r.nod_id)}</span><span>${esc(r.denumire)}</span></div>`,
+    r=>{ closeModal(); modalCreeazaP(r.nod_id); });
+}
+function modalCreeazaPrmDictionar(){
+  const m = showModal('Parametru NOU in dictionar', `
+    <div class="hint">Se creeaza doar in dictionar, fara atasare. Il atasezi apoi pe P-uri din fisa lui ("+ ataseaza parametrul pe un P") sau din fisele P-urilor. Anti-dublura: daca exista echivalent, baza refuza si iti spune ID-ul existent.</div>
+    <label>Denumire</label><input type="text" id="dp-den">
+    <label>Tip</label><select id="dp-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
+    <label>UM (optional: mm, cm, kW...)</label><input type="text" id="dp-um">
+    <label>Valori (separate cu / )</label><input type="text" id="dp-val" placeholder="ex: mica / medie / mare">`,
+    `<button class="btn primary" id="dp-ok">creeaza</button>`);
+  m.querySelector('#dp-ok').onclick = async ()=>{
+    const den=m.querySelector('#dp-den').value.trim(), tip=m.querySelector('#dp-tip').value,
+          um=m.querySelector('#dp-um').value.trim(), val=m.querySelector('#dp-val').value.trim();
+    if(den.length<3 || !val){ toast('Completeaza denumirea si valorile.', true); return; }
+    try{
+      const id = await rpc('edit_creeaza_prm_simplu',{_denumire:den,_um:um||null,_valori:val,_tip:tip});
+      closeModal(); toast('Creat in dictionar: '+id);
+      renderNomList(document.getElementById('search').value.trim());
+      showPrmDetail(id);
+    }catch(err){ toast(err.message, true); }
+  };
 }
 
 // Cautare
