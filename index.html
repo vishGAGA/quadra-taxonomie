@@ -126,7 +126,13 @@
   .exp-grid{display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:10px;}
   .exp-grid h4{font-size:10.5px; text-transform:uppercase; letter-spacing:.8px; color:var(--accent); margin-bottom:7px;}
   @media (max-width:900px){ .exp-grid{grid-template-columns:1fr;} }
-  .vals{color:var(--text); line-height:1.55; white-space:normal;}
+  .vchips{display:flex; flex-wrap:wrap; gap:5px; align-items:center;}
+  .vchip{background:#1c2942; border:1px solid var(--border); border-radius:12px; padding:2px 10px; font-size:11.5px; display:inline-flex; gap:7px; align-items:center; line-height:1.5; white-space:nowrap;}
+  .vchip.alta{border-style:dashed; color:var(--muted);}
+  .vchip.edit{cursor:pointer;}
+  .vchip.edit:hover{border-color:var(--accent);}
+  .vchip .x{cursor:pointer; color:var(--muted); font-size:10px;}
+  .vchip .x:hover{color:#f87171;}
   .vadd{display:flex; gap:6px; margin-top:6px; align-items:center; flex-wrap:wrap;}
   .vadd input{flex:1; min-width:140px; padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:12px; outline:none;}
   .vadd input:focus{border-color:var(--accent);}
@@ -455,7 +461,7 @@ async function renderPrms(list, leafId, pId){
     list.dataset.loaded='1';
     let inner = prms.length ? prms.map(m=>
       `<div class="prm-item"><span class="prm-name">${esc(m.denumire)}</span><span class="prm-id">${esc(m.prm_id)}</span><span class="prm-tip">${esc(m.tip||'')}</span>
-       <div class="prm-vals">${esc(m.valori_lista||'')}</div>
+       <div class="vchips" style="margin-top:4px">${chipsHTML(m.valori_lista, false)}</div>
        ${EDIT?`<div class="prm-actions">
           <button class="btn mini" data-act="vals" data-prm="${esc(m.prm_id)}">+ valori</button>
           <button class="btn mini danger" data-act="del" data-prm="${esc(m.prm_id)}">&#10005; sterge parametrul</button>
@@ -633,6 +639,44 @@ function gotoNom(mode, id){
   renderNomTable(id);
 }
 
+// ---- Valori ca elemente unice (chip-uri): separatorul e ' / ' CU spatii; C20/25, TCP/IP raman intregi ----
+const splitVals = s => (s||'').split(/\s+\/\s+/).map(x=>x.trim()).filter(Boolean);
+function chipsHTML(valori, editable){
+  const vals = splitVals(valori);
+  if(!vals.length) return '<span class="hint" style="margin:0">fara valori</span>';
+  return vals.map(v=>{
+    if(v.toLowerCase()==='alta valoare') return `<span class="vchip alta" title="optiune obligatorie la listele deschise (E2)">${esc(v)}</span>`;
+    return `<span class="vchip${editable?' edit':''}" data-val="${esc(v)}"${editable?' title="click = redenumeste; x = sterge"':''}>${esc(v)}${editable?'<span class="x" title="sterge valoarea">&#10005;</span>':''}</span>`;
+  }).join('');
+}
+function rerenderChips(box, prm, lista){
+  box.innerHTML = chipsHTML(lista, EDIT);
+  wireChips(box, prm);
+}
+function wireChips(box, prm){
+  if(!EDIT) return;
+  box.querySelectorAll('.vchip.edit').forEach(ch=>{
+    const val = ch.dataset.val;
+    ch.querySelector('.x').onclick = async (e)=>{
+      e.stopPropagation();
+      if(!confirm(`Sterg valoarea "${val}" din ${prm}?`)) return;
+      try{ const lista = await rpc('edit_prm_sterge_valoare',{_prm:prm,_valoare:val}); toast('Valoare stearsa din '+prm+'.'); rerenderChips(box, prm, lista); }
+      catch(err){ toast(err.message, true); }
+    };
+    ch.onclick = (e)=>{
+      if(e.target.classList.contains('x')) return;
+      e.stopPropagation();
+      modalInput('Redenumeste valoarea — '+prm,
+        'Valoarea se inlocuieste pe pozitia ei din lista. Slash-ul din interiorul unei valori (ex: C20/25) e permis.',
+        'Valoare', val, async v=>{
+          if(!v.trim() || v.trim()===val) return;
+          try{ const lista = await rpc('edit_prm_redenumeste_valoare',{_prm:prm,_veche:val,_noua:v}); toast('Valoare redenumita in '+prm+'.'); rerenderChips(box, prm, lista); }
+          catch(err){ toast(err.message, true); }
+        });
+    };
+  });
+}
+
 async function renderNomTable(v){
   nomPane.innerHTML = '<div class="loading" style="padding:16px">se incarca...</div>';
   try{
@@ -664,7 +708,7 @@ async function renderNomTable(v){
         <td><b>${esc(r.denumire)}</b></td>
         <td class="prm-tip">${esc(r.tip==='lista deschisa'?'deschisa':'inchisa')}</td>
         <td>${esc(r.um||'')}</td>
-        <td class="vcell"><div class="vals">${esc(r.valori_lista||'')}</div>${EDIT?`<div class="vadd"><input placeholder="valori noi (cu / intre ele)" data-prm="${esc(r.prm_id)}"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button></div>`:''}</td>
+        <td class="vcell"><div class="vchips" data-prm="${esc(r.prm_id)}">${chipsHTML(r.valori_lista, EDIT)}</div>${EDIT?`<div class="vadd"><input placeholder="valoare noua (mai multe: separa cu ' / ')" data-prm="${esc(r.prm_id)}"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button></div>`:''}</td>
         <td><span class="nom-cnt">${r.nr_utilizari}x</span></td></tr>`).join('');
     }
     nomPane.innerHTML = `<div class="nomtool">${tool}</div><table class="ntab"><thead>${head}</thead><tbody>${body}</tbody></table>` + (rows.length ? '' : '<div class="loading" style="padding:16px">nimic gasit</div>');
@@ -679,6 +723,7 @@ async function renderNomTable(v){
       });
     });
     if(EDIT && MODE==='prm'){
+      nomPane.querySelectorAll('.vchips[data-prm]').forEach(box=> wireChips(box, box.dataset.prm));
       nomPane.querySelectorAll('[data-act="vadd"]').forEach(b=> b.onclick = ()=> valAdd(b));
       nomPane.querySelectorAll('.vadd input').forEach(i=> i.addEventListener('keydown', e=>{
         if(e.key==='Enter'){ const b=i.closest('.vadd').querySelector('[data-act="vadd"]'); if(b) b.click(); }
@@ -697,23 +742,24 @@ async function valAdd(btn){
   const prm = btn.dataset.prm;
   const inp = btn.closest('.vadd').querySelector('input');
   const v = inp.value.trim();
-  if(!v){ toast('Scrie valorile noi in casuta (cu / intre ele daca sunt mai multe).', true); return; }
+  if(!v){ toast('Scrie valoarea noua in casuta (mai multe se separa cu " / ").', true); return; }
   try{
     const lista = await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:v});
-    btn.closest('td').querySelector('.vals').textContent = lista;
+    rerenderChips(btn.closest('td').querySelector('.vchips'), prm, lista);
     inp.value=''; toast('Valori adaugate la '+prm+'.');
   }catch(err){ toast(err.message, true); }
 }
 function valSet(btn){
   const prm = btn.dataset.prm;
-  const cell = btn.closest('td');
+  const box = btn.closest('td').querySelector('.vchips');
+  const cur = Array.from(box.querySelectorAll('.vchip')).map(c=>c.dataset.val||c.textContent.replace(/✕$/,'').trim()).join(' / ');
   modalInput('Rescrie valorile — '+prm,
-    'Inlocuiesti complet lista de valori (separate cu / ). La parametrii cu lista deschisa, optiunea "alta valoare" se pastreaza automat.',
-    'Valori', cell.querySelector('.vals').textContent, async v=>{
+    'Inlocuiesti complet lista de valori. Elementele se separa cu " / " (spatiu-slash-spatiu); slash-ul din interiorul unei valori (C20/25) ramane lipit. La listele deschise, "alta valoare" se pastreaza automat.',
+    'Valori', cur, async v=>{
       try{
         await rpc('edit_prm_seteaza_valori',{_prm:prm,_valori:v});
         const fresh = await q(`/viz_prm_nomenclator?prm_id=eq.${encodeURIComponent(prm)}&select=valori_lista`);
-        if(fresh[0]) cell.querySelector('.vals').textContent = fresh[0].valori_lista;
+        if(fresh[0]) rerenderChips(box, prm, fresh[0].valori_lista);
         toast('Valori salvate pentru '+prm+'.');
       }catch(err){ toast(err.message, true); }
     }, {textarea:true});
@@ -749,8 +795,13 @@ async function renderPExp(td, pId){
     td.innerHTML = h;
     const pl = td.querySelector('#xp-prm');
     pl.innerHTML = (d.parametri||[]).length ? d.parametri.map(p=>
-      `<div class="prm-item"><span class="prm-name">${esc(p.denumire)}</span><span class="prm-id">${esc(p.prm_id)}</span> <span class="nom-cnt">pe ${p.nr}/${d.nr_perechi}</span>${EDIT?`<button class="btn mini danger" style="margin-left:8px" data-prm="${esc(p.prm_id)}">&#10005; scoate</button>`:''}</div>`).join('')
+      `<div class="prm-item"><span class="prm-name">${esc(p.denumire)}</span><span class="prm-id">${esc(p.prm_id)}</span> <span class="nom-cnt">pe ${p.nr}/${d.nr_perechi}</span>${EDIT?`<span style="margin-left:8px; display:inline-flex; gap:6px">
+        <button class="btn mini" data-act="pren" data-prm="${esc(p.prm_id)}" data-den="${esc(p.denumire)}" title="redenumeste parametrul (se schimba peste tot)">&#9998;</button>
+        <button class="btn mini" data-act="pval" data-prm="${esc(p.prm_id)}" title="adauga o valoare noua">+ valoare</button>
+        <button class="btn mini danger" data-act="pdel" data-prm="${esc(p.prm_id)}" title="scoate parametrul de pe toate perechile acestui P">&#10005; scoate</button></span>`:''}
+       <div class="vchips" data-prm="${esc(p.prm_id)}" style="margin-top:5px">${chipsHTML(p.valori_lista, EDIT)}</div></div>`).join('')
       : '<div class="loading">fara parametri</div>';
+    pl.querySelectorAll('.vchips[data-prm]').forEach(box=> wireChips(box, box.dataset.prm));
     const ll = td.querySelector('#xp-leaf');
     ll.innerHTML = (d.leafuri||[]).map(l=>
       `<div class="nom-item" data-leaf="${esc(l.leaf_id)}"><span class="node-id">${esc(l.leaf_id)}</span><span class="nom-den">${esc(l.denumire)}</span>${EDIT?'<button class="btn mini danger xl-del" title="scoate P-ul de pe acest leaf">&#10005;</button>':''}</div>`).join('') || '<div class="loading">-</div>';
@@ -764,10 +815,29 @@ async function renderPExp(td, pId){
       };
     });
     if(!EDIT) return;
-    pl.querySelectorAll('[data-prm]').forEach(b=> b.onclick = async ()=>{
+    pl.querySelectorAll('[data-act="pdel"]').forEach(b=> b.onclick = async ()=>{
       if(!confirm(`Scot parametrul ${b.dataset.prm} de pe TOATE perechile lui ${d.p_id}?\n(perechile care ar ramane sub 2 parametri sunt sarite)`)) return;
       try{ toast(await rpc('edit_p_sterge_prm_global',{_p:d.p_id,_prm:b.dataset.prm})); refreshNom(pId); }catch(err){ toast(err.message,true); }
     });
+    pl.querySelectorAll('[data-act="pren"]').forEach(b=> b.onclick = ()=>
+      modalInput('Redenumeste '+b.dataset.prm,
+        'Denumirea parametrului se schimba peste tot unde e folosit; denumirea veche ramane sinonim.',
+        'Denumire noua', b.dataset.den, async v=>{
+          if(!v.trim() || v.trim()===b.dataset.den) return;
+          try{ toast(await rpc('edit_redenumeste_prm',{_prm:b.dataset.prm,_denumire_noua:v})); refreshNom(pId); }catch(err){ toast(err.message,true); }
+        }));
+    pl.querySelectorAll('[data-act="pval"]').forEach(b=> b.onclick = ()=>
+      modalInput('Adauga valoare la '+b.dataset.prm,
+        'Valoarea intra inaintea optiunii "alta valoare". Mai multe valori se separa cu " / " (spatiu-slash-spatiu); C20/25 ramane un singur element.',
+        'Valoare noua', '', async v=>{
+          if(!v.trim()) return;
+          try{
+            const lista = await rpc('edit_adauga_valori_prm',{_prm:b.dataset.prm,_valori_noi:v});
+            const box = pl.querySelector(`.vchips[data-prm="${b.dataset.prm}"]`);
+            if(box) rerenderChips(box, b.dataset.prm, lista);
+            toast('Valoare adaugata la '+b.dataset.prm+'.');
+          }catch(err){ toast(err.message,true); }
+        }));
     td.querySelector('#xp-ren').onclick = ()=> modalInput('Redenumeste '+d.p_id,
       'Denumirea se schimba pe TOATE leafurile care folosesc P-ul; denumirea veche ramane sinonim.',
       'Denumire noua', d.denumire, async v=>{
