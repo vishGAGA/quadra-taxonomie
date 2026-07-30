@@ -406,9 +406,10 @@ async function showDetail(id){
       detail.innerHTML = html;
       if(EDIT){
         const bar=document.getElementById('p-editbar'); bar.className='editbar';
-        bar.innerHTML = `<button class="btn" id="add-p-exist">+ ataseaza P existent</button><button class="btn primary" id="add-p-new">+ creeaza P nou</button>`;
+        bar.innerHTML = `<button class="btn" id="add-p-exist">+ ataseaza P existent</button><button class="btn primary" id="add-p-new">+ creeaza P nou</button><button class="btn" id="gen-p" title="propune P-urile pe care fratii acestui leaf le au si el nu">&#9881; genereaza P-uri</button>`;
         document.getElementById('add-p-exist').onclick = ()=> modalAtaseazaP(id);
         document.getElementById('add-p-new').onclick = ()=> modalCreeazaP(id);
+        document.getElementById('gen-p').onclick = ()=> genP(id);
         const bt=document.getElementById('edit-texte'); if(bt) bt.onclick = ()=> modalEditeazaTexte(n);
       }
       const ps = await q(`/viz_leaf_p?leaf_id=eq.${encodeURIComponent(id)}&select=*&order=pozitie`);
@@ -469,7 +470,8 @@ async function renderPrms(list, leafId, pId){
       : '<div class="loading">fara parametri</div>';
     if(EDIT) inner += `<div class="prm-addbar">
         <button class="btn mini" data-act="add-exist">+ parametru existent</button>
-        <button class="btn mini primary" data-act="add-new">+ parametru NOU</button></div>`;
+        <button class="btn mini primary" data-act="add-new">+ parametru NOU</button>
+        <button class="btn mini" data-act="gen-prm" title="propune parametrii folositi de acest P in alte contexte, cu verificare anti-dubluri">&#9881; genereaza parametri</button></div>`;
     list.innerHTML = inner;
     if(!EDIT) return;
     list.querySelectorAll('[data-act]').forEach(b=>{
@@ -491,6 +493,8 @@ async function renderPrms(list, leafId, pId){
                   toast('Valori adaugate la '+prm+'.'); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
                 }catch(err){ toast(err.message, true); }
               });
+          } else if(act==='gen-prm'){
+            genPrm(leafId, pId, list);
           } else if(act==='add-exist'){
             const m = showModal('Adauga parametru existent pe '+pId, `
               <label>Cauta in dictionarul PRM</label><input type="text" id="ap-q" placeholder="denumire sau PRM-...">
@@ -982,6 +986,60 @@ function modalCreeazaPrmDictionar(){
       refreshNom(id);
     }catch(err){ toast(err.message, true); }
   };
+}
+
+// ---- Generare automata: P-uri pe leaf si parametri pe pereche, cu check anti-dubluri ----
+function modalChecklist(title, hint, items, aplicaLabel, onOk){
+  const m = showModal(title, `
+    ${hint?`<div class="hint">${hint}</div>`:''}
+    <div id="ck-list">${items.map((it,i)=>`
+      <label style="display:flex; gap:9px; align-items:flex-start; padding:7px 9px; border-radius:8px; cursor:pointer; border:1px solid ${it.warn?'#7c5a10':'transparent'}; margin-bottom:4px; background:${it.warn?'#2a2109':'transparent'}">
+        <input type="checkbox" data-i="${i}" ${it.checked?'checked':''} style="margin-top:3px; accent-color:var(--accent); width:14px; height:14px;">
+        <span style="flex:1; font-size:12.5px; line-height:1.5">${it.html}${it.warn?`<div style="color:var(--amber); font-size:11px; margin-top:3px">&#9888; ${it.warn}</div>`:''}</span>
+      </label>`).join('')}</div>`,
+    `<button class="btn" id="ck-cancel">renunta</button><button class="btn primary" id="ck-ok"></button>`);
+  const okBtn = m.querySelector('#ck-ok');
+  const upd = ()=>{ const n = m.querySelectorAll('#ck-list input:checked').length; okBtn.textContent = aplicaLabel+' ('+n+')'; okBtn.disabled = !n; };
+  m.querySelectorAll('#ck-list input').forEach(c=> c.addEventListener('change', upd)); upd();
+  m.querySelector('#ck-cancel').onclick = closeModal;
+  okBtn.onclick = ()=>{
+    const ids = Array.from(m.querySelectorAll('#ck-list input:checked')).map(c=> items[+c.dataset.i].id);
+    closeModal(); onOk(ids);
+  };
+}
+async function genP(leafId){
+  try{
+    const d = await rpc('gen_propune_p',{_leaf:leafId});
+    const props = d.propuneri||[];
+    if(!props.length){ toast('Nimic de propus: leaf-ul are deja toate P-urile folosite de '+(d.sursa==='frati'?'frati':'veri')+' ('+d.nr_p_curente+' P-uri in pachet).'); return; }
+    const items = props.map(p=>({ id:p.p_id,
+      checked: p.nr*2 > d.nr_baza && p.are_parametri,
+      html: `<span class="p-id">${esc(p.p_id)}</span> <b>${esc(p.denumire)}</b> <span class="p-um">${esc(p.um||'')}</span> <span class="nom-cnt">la ${p.nr} din ${d.nr_baza} ${esc(d.sursa)}</span>`,
+      warn: p.are_parametri ? null : 'nu are parametri de mostenit nicaieri — daca il bifezi va fi sarit; ataseaza-l manual ca sa ii alegi parametrii' }));
+    modalChecklist('Generare P-uri — '+leafId,
+      'Propunerile vin din pachetele '+(d.sursa==='frati'?'FRATILOR':'VERILOR')+' ('+d.nr_baza+' leafuri '+esc(d.sursa)+'). CHECK aplicat: P-urile deja atasate leaf-ului au fost excluse. Prebifate = cele folosite de majoritatea '+esc(d.sursa)+'lor; restul bifeaza-le doar daca apartin cu adevarat acestui leaf. Parametrii perechilor se mostenesc automat (setul majoritar al fratilor, altfel cel mai frecvent set global).',
+      items, 'ataseaza selectatele', async ids=>{
+        try{ toast(await rpc('edit_gen_aplica_p',{_leaf:leafId,_p_ids:ids})); showDetail(leafId); }
+        catch(err){ toast(err.message, true); }
+      });
+  }catch(err){ toast(err.message, true); }
+}
+async function genPrm(leafId, pId, list){
+  try{
+    const d = await rpc('gen_propune_prm',{_leaf:leafId,_p:pId});
+    const props = d.propuneri||[];
+    if(!props.length){ toast('Nimic de propus: perechea are deja toti parametrii pe care acest P ii foloseste in alte contexte ('+d.nr_curenti+' parametri).'); return; }
+    const items = props.map(r=>({ id:r.prm_id,
+      checked: !r.dublura_de,
+      html: `<span class="prm-id">${esc(r.prm_id)}</span> <b>${esc(r.denumire)}</b> <span class="prm-tip">${esc(r.tip||'')}</span> <span class="nom-cnt">${r.nr_frati>0?('la '+r.nr_frati+' frati'):('in '+r.nr+' contexte')}</span><div class="vchips" style="margin-top:4px">${chipsHTML(r.valori_lista, false)}</div>`,
+      warn: r.dublura_de ? ('posibila DUBLURA: seamana cu "'+esc(r.dublura_den)+'" ('+esc(r.dublura_de)+') deja atasat perechii — bifeaza doar daca e alt concept') : null }));
+    modalChecklist('Generare parametri — '+pId+' pe '+leafId,
+      'CHECK anti-dubluri aplicat inainte de afisare: parametrii deja atasati perechii au fost EXCLUSI, iar cei care doar seamana cu unii atasati sunt marcati cu galben si nebifati. Perechea are acum '+d.nr_curenti+' parametri (limita E3: '+d.max_e3+').',
+      items, 'adauga selectatii', async ids=>{
+        try{ toast(await rpc('edit_gen_aplica_prm',{_leaf:leafId,_p:pId,_prm_ids:ids})); list.dataset.loaded=''; await renderPrms(list, leafId, pId); }
+        catch(err){ toast(err.message, true); }
+      });
+  }catch(err){ toast(err.message, true); }
 }
 
 // Cautare
