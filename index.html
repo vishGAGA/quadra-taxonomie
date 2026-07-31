@@ -397,11 +397,12 @@ async function showDetail(id){
         <span>${esc(n.status_generare||'')}${n.status_inchidere?' · '+esc(n.status_inchidere):''}</span>
         ${EDIT?'<button class="btn mini" id="edit-texte">&#9998; editeaza textele</button>':''}</div>`;
     const kv=[];
-    if(n.sinonime) kv.push(`<b>Sinonime:</b> ${esc(n.sinonime)}`);
-    if(n.include_) kv.push(`<b>Include:</b> ${esc(n.include_)}`);
-    if(n.exclude_) kv.push(`<b>Exclude:</b> ${esc(n.exclude_)}`);
-    if(n.criteriu_asociere) kv.push(`<b>Criteriu de asociere:</b> ${esc(n.criteriu_asociere)}`);
-    if(n.descriere || kv.length) html += `<div class="section"><h3>Descriere si Asociere</h3>${n.descriere?`<p>${esc(n.descriere)}</p>`:''}${kv.length?`<div class="kv" style="margin-top:${n.descriere?'12px':'0'}">${kv.join('<br><br>')}</div>`:''}</div>`;
+    if(n.descriere) kv.push(`<b>CE ESTE (context):</b> ${esc(n.descriere)}`);
+    if(n.include_) kv.push(`<b>CONTINE (in interior):</b> ${esc(n.include_)}`);
+    if(n.exclude_) kv.push(`<b>NU CONTINE (acelasi nivel — se mapeaza acolo):</b> ${esc(n.exclude_)}`);
+    if(n.sinonime) kv.push(`<b>SINONIME / POSIBILE ARTICOLE:</b> ${esc(n.sinonime)}`);
+    if(n.criteriu_asociere) kv.push(`<b>REGULA DE MAPARE:</b> ${esc(n.criteriu_asociere)}`);
+    if(kv.length) html += `<div class="section"><h3>Descriere si Asociere</h3><div class="kv">${kv.join('<br><br>')}</div></div>`;
     const golP = '<span class="hint" style="margin:0">necompletat — activeaza Editare si apasa "editeaza textele"</span>';
     html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
     html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
@@ -582,32 +583,35 @@ function modalCreeazaP(leafId){
 // ---- Modal editare texte descriptive (orice nod: leaf sau categorie) ----
 function modalEditeazaTexte(n){
   const m = showModal('Editeaza textele — '+esc(n.nod_id)+' '+esc(n.denumire), `
-    <div class="hint">Se salveaza doar campurile pe care le modifici. Reguli pastrate automat: descrierea unui leaf are minim 200 caractere (nod superior: minim 80), descrierea si criteriul nu pot fi identice cu ale unui frate, diacriticele se curata singure.</div>
-    <label>Descriere</label><textarea id="tx-d" rows="7"></textarea>
-    <label>Sinonime</label><textarea id="tx-s" rows="2"></textarea>
-    <label>Include</label><textarea id="tx-i" rows="3"></textarea>
-    <label>Exclude</label><textarea id="tx-e" rows="3"></textarea>
-    <label>Criteriu de asociere</label><textarea id="tx-c" rows="3"></textarea>
+    <div class="hint">Un singur camp, impartit prin titlurile de sectiune (CE ESTE / CONTINE / NU CONTINE / SINONIME / REGULA DE MAPARE) — pastreaza titlurile pe randul lor, editeaza liber textul de sub ele. Se salveaza doar sectiunile modificate. Reguli automate: CE ESTE minim 200 caractere la leaf (80 la nod superior), fara texte identice cu un frate, diacriticele se curata singure.</div>
+    <label>Descriere si Asociere (un singur camp — sectiunile raman separate prin titlurile lor)</label>
+    <textarea id="tx-da" rows="16"></textarea>
     <label>Prompt pentru caiete de sarcini</label><textarea id="tx-pc" rows="5" placeholder="instructiunile pe baza carora se genereaza caietul de sarcini pentru acest leaf..."></textarea>
     <label>Prompt pentru capitole</label><textarea id="tx-pk" rows="5" placeholder="instructiunile pe baza carora se genereaza capitolele..."></textarea>`,
     `<button class="btn" id="tx-cancel">renunta</button><button class="btn primary" id="tx-ok">salveaza</button>`);
-  m.querySelector('#tx-d').value = n.descriere||'';
-  m.querySelector('#tx-s').value = n.sinonime||'';
-  m.querySelector('#tx-i').value = n.include_||'';
-  m.querySelector('#tx-e').value = n.exclude_||'';
-  m.querySelector('#tx-c').value = n.criteriu_asociere||'';
+  m.querySelector('#tx-da').value =
+    'CE ESTE:\n'+(n.descriere||'')+'\n\nCONTINE:\n'+(n.include_||'')+'\n\nNU CONTINE:\n'+(n.exclude_||'')+
+    '\n\nSINONIME:\n'+(n.sinonime||'')+'\n\nREGULA DE MAPARE:\n'+(n.criteriu_asociere||'');
   m.querySelector('#tx-pc').value = n.prompt_caiete||'';
   m.querySelector('#tx-pk').value = n.prompt_capitole||'';
   m.querySelector('#tx-cancel').onclick = closeModal;
   m.querySelector('#tx-ok').onclick = async ()=>{
     const val = s => m.querySelector(s).value;
     const chg = (v, old) => (v.trim() !== (old||'').trim()) ? v : null;
+    const buckets = {'CE ESTE':'', 'CONTINE':'', 'NU CONTINE':'', 'SINONIME':'', 'REGULA DE MAPARE':''};
+    let cur = null;
+    for(const line of val('#tx-da').split('\n')){
+      const k = line.trim().replace(/:$/,'').toUpperCase();
+      if(buckets[k] !== undefined){ cur = k; continue; }
+      if(cur !== null) buckets[cur] += (buckets[cur] ? '\n' : '') + line;
+    }
+    for(const k in buckets) buckets[k] = buckets[k].trim();
     const args = {_nod:n.nod_id,
-      _descriere: chg(val('#tx-d'), n.descriere),
-      _sinonime:  chg(val('#tx-s'), n.sinonime),
-      _include:   chg(val('#tx-i'), n.include_),
-      _exclude:   chg(val('#tx-e'), n.exclude_),
-      _criteriu:  chg(val('#tx-c'), n.criteriu_asociere)};
+      _descriere: chg(buckets['CE ESTE'], n.descriere),
+      _sinonime:  chg(buckets['SINONIME'], n.sinonime),
+      _include:   chg(buckets['CONTINE'], n.include_),
+      _exclude:   chg(buckets['NU CONTINE'], n.exclude_),
+      _criteriu:  chg(buckets['REGULA DE MAPARE'], n.criteriu_asociere)};
     const pc = chg(val('#tx-pc'), n.prompt_caiete);
     const pk = chg(val('#tx-pk'), n.prompt_capitole);
     const areTexte = !(args._descriere===null && args._sinonime===null && args._include===null && args._exclude===null && args._criteriu===null);
