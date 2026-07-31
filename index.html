@@ -400,8 +400,8 @@ async function showDetail(id){
     if(n.criteriu_asociere) kv.push(`<b>Criteriu de asociere:</b> ${esc(n.criteriu_asociere)}`);
     if(n.descriere || kv.length) html += `<div class="section"><h3>Descriere si Asociere</h3>${n.descriere?`<p>${esc(n.descriere)}</p>`:''}${kv.length?`<div class="kv" style="margin-top:${n.descriere?'12px':'0'}">${kv.join('<br><br>')}</div>`:''}</div>`;
     const golP = '<span class="hint" style="margin:0">necompletat — activeaza Editare si apasa "editeaza textele"</span>';
-    if(n.tip==='leaf' || n.prompt_caiete) html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
-    if(n.tip==='leaf' || n.prompt_capitole) html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
+    html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
+    html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
 
     if(n.tip==='leaf'){
       html += `<div class="section"><h3>P-uri (lista de cantitati)</h3><div id="p-editbar"></div><div id="p-list"><div class="loading">se incarca...</div></div></div>`;
