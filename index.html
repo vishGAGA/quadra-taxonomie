@@ -393,13 +393,15 @@ async function showDetail(id){
       <div class="d-sub"><span class="node-id">${esc(n.nod_id)}</span> ${badge(n.tip)}
         <span>${esc(n.status_generare||'')}${n.status_inchidere?' · '+esc(n.status_inchidere):''}</span>
         ${EDIT?'<button class="btn mini" id="edit-texte">&#9998; editeaza textele</button>':''}</div>`;
-    if(n.descriere) html += `<div class="section"><h3>Descriere</h3><p>${esc(n.descriere)}</p></div>`;
     const kv=[];
     if(n.sinonime) kv.push(`<b>Sinonime:</b> ${esc(n.sinonime)}`);
     if(n.include_) kv.push(`<b>Include:</b> ${esc(n.include_)}`);
     if(n.exclude_) kv.push(`<b>Exclude:</b> ${esc(n.exclude_)}`);
     if(n.criteriu_asociere) kv.push(`<b>Criteriu de asociere:</b> ${esc(n.criteriu_asociere)}`);
-    if(kv.length) html += `<div class="section"><h3>Asociere</h3><div class="kv">${kv.join('<br><br>')}</div></div>`;
+    if(n.descriere || kv.length) html += `<div class="section"><h3>Descriere si Asociere</h3>${n.descriere?`<p>${esc(n.descriere)}</p>`:''}${kv.length?`<div class="kv" style="margin-top:${n.descriere?'12px':'0'}">${kv.join('<br><br>')}</div>`:''}</div>`;
+    const golP = '<span class="hint" style="margin:0">necompletat — activeaza Editare si apasa "editeaza textele"</span>';
+    if(n.tip==='leaf' || n.prompt_caiete) html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
+    if(n.tip==='leaf' || n.prompt_capitole) html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
 
     if(n.tip==='leaf'){
       html += `<div class="section"><h3>P-uri (lista de cantitati)</h3><div id="p-editbar"></div><div id="p-list"><div class="loading">se incarca...</div></div></div>`;
@@ -582,13 +584,17 @@ function modalEditeazaTexte(n){
     <label>Sinonime</label><textarea id="tx-s" rows="2"></textarea>
     <label>Include</label><textarea id="tx-i" rows="3"></textarea>
     <label>Exclude</label><textarea id="tx-e" rows="3"></textarea>
-    <label>Criteriu de asociere</label><textarea id="tx-c" rows="3"></textarea>`,
+    <label>Criteriu de asociere</label><textarea id="tx-c" rows="3"></textarea>
+    <label>Prompt pentru caiete de sarcini</label><textarea id="tx-pc" rows="5" placeholder="instructiunile pe baza carora se genereaza caietul de sarcini pentru acest leaf..."></textarea>
+    <label>Prompt pentru capitole</label><textarea id="tx-pk" rows="5" placeholder="instructiunile pe baza carora se genereaza capitolele..."></textarea>`,
     `<button class="btn" id="tx-cancel">renunta</button><button class="btn primary" id="tx-ok">salveaza</button>`);
   m.querySelector('#tx-d').value = n.descriere||'';
   m.querySelector('#tx-s').value = n.sinonime||'';
   m.querySelector('#tx-i').value = n.include_||'';
   m.querySelector('#tx-e').value = n.exclude_||'';
   m.querySelector('#tx-c').value = n.criteriu_asociere||'';
+  m.querySelector('#tx-pc').value = n.prompt_caiete||'';
+  m.querySelector('#tx-pk').value = n.prompt_capitole||'';
   m.querySelector('#tx-cancel').onclick = closeModal;
   m.querySelector('#tx-ok').onclick = async ()=>{
     const val = s => m.querySelector(s).value;
@@ -599,12 +605,14 @@ function modalEditeazaTexte(n){
       _include:   chg(val('#tx-i'), n.include_),
       _exclude:   chg(val('#tx-e'), n.exclude_),
       _criteriu:  chg(val('#tx-c'), n.criteriu_asociere)};
-    if(args._descriere===null && args._sinonime===null && args._include===null && args._exclude===null && args._criteriu===null){
-      toast('Nimic modificat.'); closeModal(); return;
-    }
+    const pc = chg(val('#tx-pc'), n.prompt_caiete);
+    const pk = chg(val('#tx-pk'), n.prompt_capitole);
+    const areTexte = !(args._descriere===null && args._sinonime===null && args._include===null && args._exclude===null && args._criteriu===null);
+    if(!areTexte && pc===null && pk===null){ toast('Nimic modificat.'); closeModal(); return; }
     try{
-      const r = await rpc('edit_seteaza_descrieri', args);
-      toast(r); closeModal();
+      if(areTexte) toast(await rpc('edit_seteaza_descrieri', args));
+      if(pc!==null || pk!==null) toast(await rpc('edit_seteaza_prompturi', {_nod:n.nod_id, _caiete:pc, _capitole:pk}));
+      closeModal();
       nodeCache[n.nod_id] = {nod_id:n.nod_id, parinte_id:n.parinte_id, tip:n.tip, denumire:n.denumire};
       showDetail(n.nod_id);
     }catch(err){ toast(err.message, true); }
