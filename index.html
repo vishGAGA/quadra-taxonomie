@@ -212,10 +212,13 @@ async function rpc(fn, args){
   try{ return JSON.parse(txt); }catch(e){ return txt; }
 }
 // ---- Editare: stare + utilitare UI ----
-let EDIT = false, currentId = null, MODE = 'tree', EXPANDED = null, PENDING_EXPAND = null;
+let EDIT = localStorage.getItem('quadra_edit') !== 'off', currentId = null, MODE = 'tree', EXPANDED = null, PENDING_EXPAND = null;
 const editToggle = document.getElementById('edit-toggle');
+editToggle.checked = EDIT;
+document.getElementById('edit-switch').classList.toggle('on', EDIT);
 editToggle.addEventListener('change', ()=>{
   EDIT = editToggle.checked;
+  localStorage.setItem('quadra_edit', EDIT ? 'on' : 'off');
   if(EDIT && !PIN) cerePin(); // optional aici; oricum se cere automat la prima scriere
   document.getElementById('edit-switch').classList.toggle('on', EDIT);
   if(MODE!=='tree'){ PENDING_EXPAND = EXPANDED; renderNomTable(document.getElementById('search').value.trim()); }
@@ -939,8 +942,9 @@ function modalInput(title, hint, label, initial, onOk, opts){
 // ---- Modale nomenclator: asocieri din sens invers + creare din dictionar ----
 function cautaLeafuri(v){
   const e=encodeURIComponent('%'+v+'%');
-  return q(`/viz_noduri?tip=eq.leaf&or=(denumire.ilike.${e},nod_id.ilike.${e})&select=nod_id,denumire&limit=40`);
+  return q(`/viz_noduri?tip=eq.leaf&or=(denumire.ilike.${e},nod_id.ilike.${e},lant_complet.ilike.${e})&select=nod_id,denumire,lant_complet&limit=40`);
 }
+const rowLeaf = r=>`<div class="sr-item" style="flex-wrap:wrap"><span class="node-id">${esc(r.nod_id)}</span><span><b>${esc(r.denumire)}</b><div class="hint" style="margin:2px 0 0">${esc(r.lant_complet||'')}</div></span></div>`;
 function modalAtaseazaLeafPeP(pId){
   const m = showModal('Ataseaza '+esc(pId)+' pe un leaf', `
     <div class="hint">Cauta leaf-ul dupa denumire sau ID. Parametrii perechii se mostenesc automat de la cel mai folosit leaf al P-ului; daca P-ul nu are de unde mosteni, ti se cere sa alegi minim 2.</div>
@@ -948,7 +952,7 @@ function modalAtaseazaLeafPeP(pId){
     <div class="m-results" id="lf-res"></div>`);
   wireSearch(m.querySelector('#lf-q'), m.querySelector('#lf-res'),
     cautaLeafuri,
-    r=>`<div class="sr-item"><span class="node-id">${esc(r.nod_id)}</span><span>${esc(r.denumire)}</span></div>`,
+    rowLeaf,
     async r=>{
       try{
         const res = await rpc('edit_adauga_p_pe_leaf',{_leaf:r.nod_id,_p:pId,_prms:null});
@@ -972,7 +976,7 @@ function modalCreeazaPDinNomenclator(){
     <div class="m-results" id="cl-res"></div>`);
   wireSearch(m.querySelector('#cl-q'), m.querySelector('#cl-res'),
     cautaLeafuri,
-    r=>`<div class="sr-item"><span class="node-id">${esc(r.nod_id)}</span><span>${esc(r.denumire)}</span></div>`,
+    rowLeaf,
     r=>{ closeModal(); modalCreeazaP(r.nod_id); });
 }
 function modalCreeazaPrmDictionar(){
@@ -1022,7 +1026,7 @@ async function genP(leafId){
     if(!props.length){ toast('Nimic de propus: leaf-ul are deja toate P-urile folosite de '+(d.sursa==='frati'?'frati':'veri')+' ('+d.nr_p_curente+' P-uri in pachet).'); return; }
     const items = props.map(p=>({ id:p.p_id,
       checked: p.nr*2 > d.nr_baza && p.are_parametri,
-      html: `<span class="p-id">${esc(p.p_id)}</span> <b>${esc(p.denumire)}</b> <span class="p-um">${esc(p.um||'')}</span> <span class="nom-cnt">la ${p.nr} din ${d.nr_baza} ${esc(d.sursa)}</span>`,
+      html: `<span class="p-id">${esc(p.p_id)}</span> <b>${esc(p.denumire)}</b> <span class="p-um">${esc(p.um||'')}</span> <span class="nom-cnt">${p.sursa?('la '+p.nr+' '+esc(p.sursa)):('la '+p.nr+' din '+d.nr_baza+' '+esc(d.sursa))}</span>${p.sursa?' <span class="prm-tip">nivel 2</span>':''}`,
       warn: p.are_parametri ? null : 'nu are parametri de mostenit nicaieri — daca il bifezi va fi sarit; ataseaza-l manual ca sa ii alegi parametrii' }));
     modalChecklist('Generare P-uri — '+leafId,
       'Propunerile vin din pachetele '+(d.sursa==='frati'?'FRATILOR':'VERILOR')+' ('+d.nr_baza+' leafuri '+esc(d.sursa)+'). CHECK aplicat: P-urile deja atasate leaf-ului au fost excluse. Prebifate = cele folosite de majoritatea '+esc(d.sursa)+'lor; restul bifeaza-le doar daca apartin cu adevarat acestui leaf. Parametrii perechilor se mostenesc automat (setul majoritar al fratilor, altfel cel mai frecvent set global).',
@@ -1039,7 +1043,7 @@ async function genPrm(leafId, pId, list){
     if(!props.length){ toast('Nimic de propus: perechea are deja toti parametrii pe care acest P ii foloseste in alte contexte ('+d.nr_curenti+' parametri).'); return; }
     const items = props.map(r=>({ id:r.prm_id,
       checked: !r.dublura_de,
-      html: `<span class="prm-id">${esc(r.prm_id)}</span> <b>${esc(r.denumire)}</b> <span class="prm-tip">${esc(r.tip||'')}</span> <span class="nom-cnt">${r.nr_frati>0?('la '+r.nr_frati+' frati'):('in '+r.nr+' contexte')}</span><div class="vchips" style="margin-top:4px">${chipsHTML(r.valori_lista, false)}</div>`,
+      html: `<span class="prm-id">${esc(r.prm_id)}</span> <b>${esc(r.denumire)}</b> <span class="prm-tip">${esc(r.tip||'')}</span> <span class="nom-cnt">${r.nr_frati>0?('la '+r.nr_frati+' frati'):('in '+r.nr+' contexte')}</span>${r.sursa?' <span class="prm-tip">'+esc(r.sursa)+' — nivel 2</span>':''}<div class="vchips" style="margin-top:4px">${chipsHTML(r.valori_lista, false)}</div>`,
       warn: r.dublura_de ? ('posibila DUBLURA: seamana cu "'+esc(r.dublura_den)+'" ('+esc(r.dublura_de)+') deja atasat perechii — bifeaza doar daca e alt concept') : null }));
     modalChecklist('Generare parametri — '+pId+' pe '+leafId,
       'CHECK anti-dubluri aplicat inainte de afisare: parametrii deja atasati perechii au fost EXCLUSI, iar cei care doar seamana cu unii atasati sunt marcati cu galben si nebifati. Perechea are acum '+d.nr_curenti+' parametri (limita E3: '+d.max_e3+').',
