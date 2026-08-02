@@ -778,9 +778,11 @@ async function renderNomTable(v){
       tool = `<span class="sr-count">${rows.length} P-uri${rows.length===400?' (primele 400 — cauta ca sa restrangi)':''}</span>
         <select id="nom-sort"><option value="p_id"${NOMSORT.p==='p_id'?' selected':''}>sortare: cod</option><option value="denumire"${NOMSORT.p==='denumire'?' selected':''}>sortare: denumire</option><option value="nr_leafuri.desc"${NOMSORT.p==='nr_leafuri.desc'?' selected':''}>sortare: cele mai folosite</option></select>
         <span class="hint" style="margin:0">click pe un rand = detalii si actiuni</span>
+        ${EDIT?'<button class="btn mini danger" id="nom-del-p" disabled>sterge selectate</button>':''}
         ${EDIT?'<button class="btn primary" id="nom-new-p">+ creeaza P nou</button>':''}`;
-      head = `<tr><th style="width:90px">Cod</th><th>Denumire</th><th style="width:56px">UM</th><th style="width:110px">Folosit pe</th></tr>`;
+      head = `<tr>${EDIT?'<th style="width:26px"></th>':''}<th style="width:90px">Cod</th><th>Denumire</th><th style="width:56px">UM</th><th style="width:110px">Folosit pe</th></tr>`;
       body = rows.map(r=>`<tr class="datarow" data-id="${esc(r.p_id)}">
+        ${EDIT?`<td><input type="checkbox" class="p-sel" data-id="${esc(r.p_id)}" data-den="${esc(r.denumire)}"></td>`:''}
         <td class="p-id">${esc(r.p_id)}</td>
         <td><b>${esc(r.denumire)}</b>${r.sinonime?`<div class="hint" style="margin:2px 0 0">${esc(r.sinonime)}</div>`:''}</td>
         <td><span class="p-um">${esc(r.um||'')}</span></td>
@@ -806,6 +808,23 @@ async function renderNomTable(v){
     srt.onchange = ()=>{ NOMSORT[MODE==='p'?'p':'prm'] = srt.value; renderNomTable(curSearch()); };
     const bnp = document.getElementById('nom-new-p'); if(bnp) bnp.onclick = modalCreeazaPDinNomenclator;
     const bnr = document.getElementById('nom-new-prm'); if(bnr) bnr.onclick = modalCreeazaPrmDictionar;
+    if(EDIT && MODE==='p'){
+      const delBtn = document.getElementById('nom-del-p');
+      const selCbs = ()=> Array.from(nomPane.querySelectorAll('.p-sel:checked'));
+      const updDel = ()=>{ const n = selCbs().length; if(delBtn){ delBtn.disabled = !n; delBtn.textContent = n?`sterge selectate (${n})`:'sterge selectate'; } };
+      nomPane.querySelectorAll('.p-sel').forEach(cb=> cb.addEventListener('change', updDel));
+      updDel();
+      if(delBtn) delBtn.onclick = async ()=>{
+        const chosen = selCbs().map(cb=>({id:cb.dataset.id, den:cb.dataset.den}));
+        if(!chosen.length) return;
+        const lista = chosen.map(c=>c.id+' — '+c.den).join('\n');
+        if(!confirm(`Sterg ${chosen.length} P-uri din dictionar?\n\n${lista}\n\nSe scot de pe toate leafurile pe care sunt (impreuna cu parametrii perechilor respective) si trec pe status 'retras'. Nu e reversibil din pagina.`)) return;
+        try{
+          toast(await rpc('edit_sterge_p_uri',{_p_uri:chosen.map(c=>c.id)}));
+          renderNomTable(curSearch());
+        }catch(err){ toast(err.message, true); }
+      };
+    }
     nomPane.querySelectorAll('tr.datarow').forEach(tr=>{
       tr.addEventListener('click', e=>{
         if(e.target.closest('button,input,select,textarea,.vadd')) return;
@@ -876,7 +895,7 @@ async function renderPExp(td, pId){
   try{
     const d = await rpc('viz_p_info',{_p:pId});
     let h = `<div class="exp-head"><b>${esc(d.denumire)}</b><span class="p-id">${esc(d.p_id)}</span><span class="p-um">${esc(d.um||'')}</span><span class="hint" style="margin:0">pe ${d.nr_leafuri} leafuri</span>`;
-    if(EDIT) h += `<button class="btn mini" id="xp-ren">&#9998; redenumeste</button><button class="btn mini" id="xp-um">schimba UM</button><button class="btn mini" id="xp-sin">sinonime</button>`;
+    if(EDIT) h += `<button class="btn mini" id="xp-ren">&#9998; redenumeste</button><button class="btn mini" id="xp-um">schimba UM</button><button class="btn mini" id="xp-sin">sinonime</button><button class="btn mini danger" id="xp-del">&#10005; sterge P</button>`;
     h += `</div>`;
     h += `<div class="exp-grid">
       <div><h4>Parametrii P-ului (pe cate perechi apar)</h4><div id="xp-prm"></div>${EDIT?'<button class="btn mini" style="margin-top:8px" id="xp-addprm">+ adauga parametru pe toate perechile</button>':''}</div>
@@ -941,15 +960,39 @@ async function renderPExp(td, pId){
       'Lista de sinonime (separate cu ; ) — inlocuieste lista curenta.', 'Sinonime', d.sinonime||'', async v=>{
         try{ toast(await rpc('edit_p_seteaza_sinonime',{_p:d.p_id,_sinonime:v})); refreshNom(pId); }catch(err){ toast(err.message,true); }
       }, {textarea:true});
+    td.querySelector('#xp-del').onclick = async ()=>{
+      if(!confirm(`Sterg ${d.p_id} (${d.denumire}) din dictionar?\n\nE pe ${d.nr_leafuri} leafuri (${d.nr_perechi} perechi) — se scoate de pe toate, impreuna cu parametrii perechilor respective, apoi P-ul trece pe status 'retras'. Nu e reversibil din pagina.`)) return;
+      try{
+        toast(await rpc('edit_sterge_p_uri',{_p_uri:[d.p_id]}));
+        document.getElementById('search').value=''; EXPANDED=null; renderNomTable('');
+      }catch(err){ toast(err.message,true); }
+    };
     td.querySelector('#xp-addprm').onclick = ()=>{
       const m = showModal('Adauga parametru pe toate perechile lui '+d.p_id, `
         <div class="hint">Se adauga pe fiecare pereche (leaf,P) care nu-l are deja si are sub 14 parametri.</div>
         <label>Cauta in dictionarul PRM</label><input type="text" id="pg-q" placeholder="denumire sau PRM-...">
-        <div class="m-results" id="pg-res"></div>`);
+        <div class="m-results" id="pg-res"></div>
+        <div style="margin:14px 0 10px; border-top:1px solid var(--border); padding-top:12px">
+          <div class="hint" style="margin-bottom:8px">Parametrul nu exista inca in dictionar? Il creezi direct aici — se ataseaza automat pe toate perechile lui ${esc(d.p_id)}.</div>
+          <label>Denumire</label><input type="text" id="pg-den">
+          <label>Tip</label><select id="pg-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
+          <label>UM (optional: mm, cm, kW...)</label><input type="text" id="pg-um">
+          <label>Valori (separate cu / )</label><input type="text" id="pg-val" placeholder="ex: mica / medie / mare">
+          <button class="btn primary mini" id="pg-creeaza" style="margin-top:8px">creeaza si ataseaza pe ${esc(d.p_id)}</button>
+        </div>`);
       wireSearch(m.querySelector('#pg-q'), m.querySelector('#pg-res'),
         val=>rpc('edit_cauta_prm',{q:val}),
         r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
         async r=>{ try{ closeModal(); toast(await rpc('edit_p_adauga_prm_global',{_p:d.p_id,_prm:r.prm_id})); refreshNom(pId); }catch(err){ toast(err.message,true); } });
+      m.querySelector('#pg-creeaza').onclick = async ()=>{
+        const den=m.querySelector('#pg-den').value.trim(), tip=m.querySelector('#pg-tip').value,
+              um=m.querySelector('#pg-um').value.trim(), val=m.querySelector('#pg-val').value.trim();
+        if(den.length<3 || !val){ toast('Completeaza denumirea si valorile.', true); return; }
+        try{
+          const r = await rpc('edit_p_creeaza_prm_global',{_p:d.p_id,_denumire:den,_um:um||null,_valori:val,_tip:tip});
+          closeModal(); toast(r); refreshNom(pId);
+        }catch(err){ toast(err.message, true); }
+      };
     };
     td.querySelector('#xp-addleaf').onclick = ()=> modalAtaseazaLeafPeP(d.p_id);
   }catch(err){ td.innerHTML = '<div class="loading">eroare: '+esc(err.message)+'</div>'; }
