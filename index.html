@@ -513,14 +513,14 @@ async function renderPrms(list, leafId, pId){
             toast('Parametru sters.'); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
           } else if(act==='vals'){
             modalInput('Adauga valori la '+prm,
-              'Valorile noi se adauga la lista existenta, inaintea optiunii "alta valoare". Mai multe valori se separa cu / .',
+              'Valorile noi se adauga la lista existenta, inaintea optiunii "alta valoare". Elementele se separa cu " / " CU SPATII — scris lipit (fara spatii) ramane UN SINGUR element, verifica mai jos cate se salveaza.',
               'Valori noi', '', async v=>{
                 if(!v.trim()) return;
                 try{
                   await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:v});
                   toast('Valori adaugate la '+prm+'.'); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
                 }catch(err){ toast(err.message, true); }
-              });
+              }, {splitPreview:true});
           } else if(act==='gen-prm'){
             genPrm(leafId, pId, list);
           } else if(act==='add-exist'){
@@ -540,8 +540,10 @@ async function renderPrms(list, leafId, pId){
               <label>Denumire</label><input type="text" id="cp-den">
               <label>Tip</label><select id="cp-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
               <label>UM (optional)</label><input type="text" id="cp-um" placeholder="mm / cm / kW ...">
-              <label>Valori (separate cu / )</label><input type="text" id="cp-val" placeholder="ex: 10 / 15 / 20">`,
+              <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="cp-val" placeholder="ex: 10 / 15 / 20">
+              <div class="valprev" id="cp-val-prev"></div>`,
               `<button class="btn primary" id="cp-ok">creeaza si ataseaza</button>`);
+            wireValPreview(m.querySelector('#cp-val'), m.querySelector('#cp-val-prev'));
             m.querySelector('#cp-ok').onclick = async ()=>{
               try{
                 const idn = await rpc('edit_creeaza_prm',{_denumire:m.querySelector('#cp-den').value,_um:m.querySelector('#cp-um').value||null,
@@ -1486,13 +1488,16 @@ async function structAdaugaLeaf(nodId){
   if(den.length<2){ if(den) toast('Denumire prea scurta.', true); return; }
   try{ const idn = await rpc('edit_creeaza_leaf', { _parinte:nodId, _denumire:den });
     toast('Leaf nou creat: '+idn); await structRefreshArbore();
+    delete nodeCache[nodId]; // parintele poate fi promovat leaf->familie de RPC — evita randare stale la reintoarcere
     if(MODE!=='tree') setMode('tree'); showDetail(idn);
   }catch(err){ toast(err.message, true); }
 }
 async function structColapsaza(nodId, denum){
   if(!confirm(`Colapsez capitolul "${denum}" intr-un singur leaf?\nTOATE leafurile-copil se sterg, iar P-urile lor urca pe acest capitol (care devine leaf). Ireversibil.`)) return;
   try{ const r = await rpc('edit_colapseaza_capitol', { _capitol:nodId });
-    toast(r); await structRefreshArbore(); showDetail(nodId);
+    toast(r); await structRefreshArbore();
+    delete nodeCache[nodId]; // tip-ul nodului tocmai s-a schimbat familie->leaf, cache-ul vechi ar arata stare gresita
+    showDetail(nodId);
   }catch(err){ toast(err.message, true); }
 }
 async function undoLista(){
@@ -1509,6 +1514,7 @@ async function structReverse(){
     try{
       if(currentId){
         const still = await q(`/viz_noduri?nod_id=eq.${encodeURIComponent(currentId)}&select=nod_id`);
+        delete nodeCache[currentId]; // undo poate schimba orice camp (inclusiv tip) pe nodul curent — nu randa din cache vechi
         if(still.length) showDetail(currentId); else setMode('tree');
       }
     }catch(e){ setMode('tree'); }
@@ -1653,6 +1659,7 @@ async function modalStergeLeaf(n){
       if(plan.mod==='capitol'){ r = await rpc('edit_colapseaza_capitol', { _capitol:capId }); }
       else { r = await rpc('edit_sterge_leafuri', { _leafuri:[n.nod_id], _assignari:plan._assignari }); }
       toast(r); closeModal(); await structRefreshArbore();
+      delete nodeCache[n.nod_id]; if(capId) delete nodeCache[capId]; // leaful sters/capitolul colapsat nu mai au starea din cache
       showDetail(capId || n.nod_id);
     }catch(err){ toast(err.message, true); bOk.disabled=false; }
   };
