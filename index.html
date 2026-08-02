@@ -152,6 +152,9 @@
   .vadd{display:flex; gap:6px; margin-top:6px; align-items:center; flex-wrap:wrap;}
   .vadd input{flex:1; min-width:140px; padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:12px; outline:none;}
   .vadd input:focus{border-color:var(--accent);}
+  .valprev{font-size:11px; color:var(--muted); line-height:1.7; margin-top:4px;}
+  .valprev .vchip{font-size:10.5px; padding:1px 8px;}
+  .vadd .valprev{flex-basis:100%; margin-top:0;}
   #pin-overlay{display:none; position:fixed; inset:0; background:rgba(2,6,23,.72); z-index:70; align-items:flex-start; justify-content:center; padding:120px 16px;}
   #pin-overlay.open{display:flex;}
   ::-webkit-scrollbar{width:10px;} ::-webkit-scrollbar-thumb{background:#334155; border-radius:6px;} ::-webkit-scrollbar-track{background:transparent;}
@@ -286,7 +289,8 @@ function pickParams(titlu, onDone){
       <label>Denumire parametru nou</label><input type="text" id="np-den">
       <label>Tip</label><select id="np-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
       <label>UM (optional: mm, cm, m, kW...)</label><input type="text" id="np-um">
-      <label>Valori (separate cu / )</label><input type="text" id="np-val" placeholder="ex: mica / medie / mare">
+      <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="np-val" placeholder="ex: mica / medie / mare">
+      <div class="valprev" id="np-val-prev"></div>
       <button class="btn primary" id="np-add">adauga la lista</button>
     </div>`,
     `<button class="btn" id="mp-cancel">renunta</button><button class="btn primary" id="mp-ok">gata (foloseste parametrii alesi)</button>`);
@@ -301,6 +305,7 @@ function pickParams(titlu, onDone){
     r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
     r=>{ if(!chips.some(c=>c.prm_id===r.prm_id)){ chips.push(r); renderChips(); } });
   m.querySelector('#mp-new').onclick = ()=>{ const f=m.querySelector('#mp-newform'); f.style.display = f.style.display==='none'?'block':'none'; };
+  wireValPreview(m.querySelector('#np-val'), m.querySelector('#np-val-prev'));
   m.querySelector('#np-add').onclick = ()=>{
     const den=m.querySelector('#np-den').value.trim(), tip=m.querySelector('#np-tip').value,
           um=m.querySelector('#np-um').value.trim(), val=m.querySelector('#np-val').value.trim();
@@ -686,6 +691,17 @@ function chipsHTML(valori, editable){
     return `<span class="vchip${editable?' edit':''}" data-val="${esc(v)}"${editable?' title="click = redenumeste; x = sterge"':''}>${esc(v)}${editable?'<span class="x" title="sterge valoarea">&#10005;</span>':''}</span>`;
   }).join('');
 }
+function wireValPreview(inputEl, previewEl){
+  if(!inputEl || !previewEl) return;
+  const upd = ()=>{
+    const vals = splitVals(inputEl.value).filter(v=> v.toLowerCase()!=='alta valoare');
+    if(!vals.length){ previewEl.innerHTML=''; return; }
+    const chips = vals.map(v=>`<span class="vchip">${esc(v)}</span>`).join(' ');
+    previewEl.innerHTML = `va salva <b>${vals.length}</b> ${vals.length>1?'elemente separate':'element'}: ${chips}`;
+  };
+  inputEl.addEventListener('input', upd);
+  upd();
+}
 function rerenderChips(box, prm, lista){
   box.innerHTML = chipsHTML(lista, EDIT);
   wireChips(box, prm);
@@ -800,7 +816,7 @@ async function renderNomTable(v){
         <td><b>${esc(r.denumire)}</b></td>
         <td class="prm-tip">${esc(r.tip==='lista deschisa'?'deschisa':'inchisa')}</td>
         <td>${esc(r.um||'')}</td>
-        <td class="vcell"><div class="vchips" data-prm="${esc(r.prm_id)}">${chipsHTML(r.valori_lista, EDIT)}</div>${EDIT?`<div class="vadd"><input placeholder="valoare noua (mai multe: separa cu ' / ')" data-prm="${esc(r.prm_id)}"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button></div>`:''}</td>
+        <td class="vcell"><div class="vchips" data-prm="${esc(r.prm_id)}">${chipsHTML(r.valori_lista, EDIT)}</div>${EDIT?`<div class="vadd"><input placeholder="valoare noua (separate cu ' / ' CU SPATII)" data-prm="${esc(r.prm_id)}"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button><div class="valprev"></div></div>`:''}</td>
         <td><span class="nom-cnt">${r.nr_utilizari}x</span></td></tr>`).join('');
     }
     nomPane.innerHTML = `<div class="nomtool">${tool}</div><table class="ntab"><thead>${head}</thead><tbody>${body}</tbody></table>` + (rows.length ? '' : '<div class="loading" style="padding:16px">nimic gasit</div>');
@@ -837,6 +853,7 @@ async function renderNomTable(v){
       nomPane.querySelectorAll('.vadd input').forEach(i=> i.addEventListener('keydown', e=>{
         if(e.key==='Enter'){ const b=i.closest('.vadd').querySelector('[data-act="vadd"]'); if(b) b.click(); }
       }));
+      nomPane.querySelectorAll('.vadd input').forEach(i=> wireValPreview(i, i.closest('.vadd').querySelector('.valprev')));
       nomPane.querySelectorAll('[data-act="vset"]').forEach(b=> b.onclick = ()=> valSet(b));
     }
     if(PENDING_EXPAND){
@@ -863,7 +880,7 @@ function valSet(btn){
   const box = btn.closest('td').querySelector('.vchips');
   const cur = Array.from(box.querySelectorAll('.vchip')).map(c=>c.dataset.val||c.textContent.replace(/✕$/,'').trim()).join(' / ');
   modalInput('Rescrie valorile — '+prm,
-    'Inlocuiesti complet lista de valori. Elementele se separa cu " / " (spatiu-slash-spatiu); slash-ul din interiorul unei valori (C20/25) ramane lipit. La listele deschise, "alta valoare" se pastreaza automat.',
+    'Inlocuiesti complet lista de valori. Elementele se separa cu " / " CU SPATII (spatiu-slash-spatiu); scris lipit (fara spatii, ex: C20/25 sau 4/5/6) ramane UN SINGUR element — verifica mai jos cate elemente se salveaza. La listele deschise, "alta valoare" se pastreaza automat.',
     'Valori', cur, async v=>{
       try{
         await rpc('edit_prm_seteaza_valori',{_prm:prm,_valori:v});
@@ -871,7 +888,7 @@ function valSet(btn){
         if(fresh[0]) rerenderChips(box, prm, fresh[0].valori_lista);
         toast('Valori salvate pentru '+prm+'.');
       }catch(err){ toast(err.message, true); }
-    }, {textarea:true});
+    }, {textarea:true, splitPreview:true});
 }
 
 function toggleExp(tr){
@@ -937,7 +954,7 @@ async function renderPExp(td, pId){
         }));
     pl.querySelectorAll('[data-act="pval"]').forEach(b=> b.onclick = ()=>
       modalInput('Adauga valoare la '+b.dataset.prm,
-        'Valoarea intra inaintea optiunii "alta valoare". Mai multe valori se separa cu " / " (spatiu-slash-spatiu); C20/25 ramane un singur element.',
+        'Valoarea intra inaintea optiunii "alta valoare". Mai multe valori se separa cu " / " CU SPATII (spatiu-slash-spatiu); scris lipit (fara spatii, ex: C20/25 sau 4/5/6) ramane UN SINGUR element — verifica mai jos cate elemente se salveaza.',
         'Valoare noua', '', async v=>{
           if(!v.trim()) return;
           try{
@@ -946,7 +963,7 @@ async function renderPExp(td, pId){
             if(box) rerenderChips(box, b.dataset.prm, lista);
             toast('Valoare adaugata la '+b.dataset.prm+'.');
           }catch(err){ toast(err.message,true); }
-        }));
+        }, {splitPreview:true}));
     td.querySelector('#xp-ren').onclick = ()=> modalInput('Redenumeste '+d.p_id,
       'Denumirea se schimba pe TOATE leafurile care folosesc P-ul; denumirea veche ramane sinonim.',
       'Denumire noua', d.denumire, async v=>{
@@ -977,13 +994,15 @@ async function renderPExp(td, pId){
           <label>Denumire</label><input type="text" id="pg-den">
           <label>Tip</label><select id="pg-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
           <label>UM (optional: mm, cm, kW...)</label><input type="text" id="pg-um">
-          <label>Valori (separate cu / )</label><input type="text" id="pg-val" placeholder="ex: mica / medie / mare">
+          <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="pg-val" placeholder="ex: mica / medie / mare">
+          <div class="valprev" id="pg-val-prev"></div>
           <button class="btn primary mini" id="pg-creeaza" style="margin-top:8px">creeaza si ataseaza pe ${esc(d.p_id)}</button>
         </div>`);
       wireSearch(m.querySelector('#pg-q'), m.querySelector('#pg-res'),
         val=>rpc('edit_cauta_prm',{q:val}),
         r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
         async r=>{ try{ closeModal(); toast(await rpc('edit_p_adauga_prm_global',{_p:d.p_id,_prm:r.prm_id})); refreshNom(pId); }catch(err){ toast(err.message,true); } });
+      wireValPreview(m.querySelector('#pg-val'), m.querySelector('#pg-val-prev'));
       m.querySelector('#pg-creeaza').onclick = async ()=>{
         const den=m.querySelector('#pg-den').value.trim(), tip=m.querySelector('#pg-tip').value,
               um=m.querySelector('#pg-um').value.trim(), val=m.querySelector('#pg-val').value.trim();
@@ -1047,10 +1066,12 @@ function modalInput(title, hint, label, initial, onOk, opts){
   const field = opts.select ? `<select id="mi-v">${opts.select.map(o=>`<option${o===initial?' selected':''}>${esc(o)}</option>`).join('')}</select>`
     : opts.textarea ? `<textarea id="mi-v" rows="4"></textarea>`
     : `<input type="text" id="mi-v">`;
-  const m = showModal(esc(title), `${hint?`<div class="hint">${esc(hint)}</div>`:''}<label>${esc(label)}</label>${field}`,
+  const prev = opts.splitPreview ? `<div class="valprev" id="mi-prev"></div>` : '';
+  const m = showModal(esc(title), `${hint?`<div class="hint">${esc(hint)}</div>`:''}<label>${esc(label)}</label>${field}${prev}`,
     `<button class="btn" id="mi-c">renunta</button><button class="btn primary" id="mi-ok">salveaza</button>`);
   const el = m.querySelector('#mi-v');
   if(!opts.select) el.value = initial||'';
+  if(opts.splitPreview) wireValPreview(el, m.querySelector('#mi-prev'));
   m.querySelector('#mi-c').onclick = closeModal;
   m.querySelector('#mi-ok').onclick = ()=>{ const v = el.value; closeModal(); onOk(v); };
   if(el.tagName==='INPUT') el.addEventListener('keydown', e=>{ if(e.key==='Enter') m.querySelector('#mi-ok').click(); });
@@ -1103,8 +1124,10 @@ function modalCreeazaPrmDictionar(){
     <label>Denumire</label><input type="text" id="dp-den">
     <label>Tip</label><select id="dp-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
     <label>UM (optional: mm, cm, kW...)</label><input type="text" id="dp-um">
-    <label>Valori (separate cu / )</label><input type="text" id="dp-val" placeholder="ex: mica / medie / mare">`,
+    <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="dp-val" placeholder="ex: mica / medie / mare">
+    <div class="valprev" id="dp-val-prev"></div>`,
     `<button class="btn primary" id="dp-ok">creeaza</button>`);
+  wireValPreview(m.querySelector('#dp-val'), m.querySelector('#dp-val-prev'));
   m.querySelector('#dp-ok').onclick = async ()=>{
     const den=m.querySelector('#dp-den').value.trim(), tip=m.querySelector('#dp-tip').value,
           um=m.querySelector('#dp-um').value.trim(), val=m.querySelector('#dp-val').value.trim();
