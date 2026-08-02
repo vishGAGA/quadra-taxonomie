@@ -107,6 +107,22 @@
   .mode-btn{border:none; background:transparent; color:var(--muted); font-size:12px; padding:5px 11px; border-radius:6px; cursor:pointer; white-space:nowrap;}
   .mode-btn:hover{color:var(--text);}
   .mode-btn.active{background:var(--panel2); color:var(--accent); font-weight:600;}
+  .gol-badge{display:none; background:#b45309; color:#fff; font-size:10px; font-weight:700; border-radius:9px; padding:1px 6px; margin-left:4px;}
+  .gol-badge.on{display:inline-block;}
+  .golfilt{display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px 16px 4px;}
+  .golchip{border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:16px; padding:5px 12px; font-size:12px; cursor:pointer; white-space:nowrap;}
+  .golchip:hover{border-color:var(--accent);}
+  .golchip.on{background:var(--panel2); border-color:var(--accent); color:var(--accent); font-weight:600;}
+  .golchip b{font-weight:700;}
+  .golnote{padding:2px 16px 10px; font-size:11.5px; color:var(--muted); line-height:1.5;}
+  .gol-cat{display:inline-block; font-size:10px; text-transform:uppercase; letter-spacing:.04em; border-radius:4px; padding:2px 6px; white-space:nowrap;}
+  .gol-cat.c1{background:#4a2f10; color:#fbbf24;}
+  .gol-cat.c2{background:#3b1d3b; color:#e879f9;}
+  .gol-cat.c3{background:#4c1d1d; color:#fca5a5;}
+  .gol-cat.c4{background:#1e3a3a; color:#5eead4;}
+  .gol-det{font-size:11.5px; color:var(--muted); line-height:1.55;}
+  .gol-key{font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--accent); white-space:nowrap;}
+  .gol-link{cursor:pointer; text-decoration:underline dotted;}
   .nom-item{display:flex; align-items:center; gap:9px; padding:6px 10px; border-radius:6px; cursor:pointer; font-size:12.5px; border-bottom:1px solid #1c2942;}
   .nom-item:hover{background:var(--panel2);}
   .nom-den{flex:1; min-width:0;}
@@ -149,6 +165,7 @@
     <button class="mode-btn active" data-m="tree">Arbore</button>
     <button class="mode-btn" data-m="p">Nomenclator P</button>
     <button class="mode-btn" data-m="prm">Parametri</button>
+    <button class="mode-btn" data-m="goluri">Goluri <span id="gol-badge" class="gol-badge"></span></button>
   </div>
   <input id="search" type="text" placeholder="Cauta dupa denumire sau ID (min 3 caractere)..." autocomplete="off">
   <span class="stats" id="stats">se incarca...</span>
@@ -640,7 +657,8 @@ function setMode(m){
   const sb = document.getElementById('search');
   sb.value='';
   sb.placeholder = t ? 'Cauta dupa denumire sau ID (min 3 caractere)...'
-    : (m==='p' ? 'Cauta P dupa denumire, sinonim sau PU-...' : 'Cauta parametru dupa denumire, valoare sau PRM-...');
+    : (m==='p' ? 'Cauta P dupa denumire, sinonim sau PU-...'
+    : (m==='goluri' ? 'Cauta in goluri: denumire, cod, nota...' : 'Cauta parametru dupa denumire, valoare sau PRM-...'));
   if(t){ searchResults.style.display='none'; treeRoot.style.display='block'; nomPane.innerHTML=''; }
   else { EXPANDED=null; renderNomTable(''); }
 }
@@ -696,7 +714,60 @@ function wireChips(box, prm){
   });
 }
 
+// ================= GOLURI (index: ce nu s-a mapat / ce lipseste din arbore) =================
+let GOLURI = null, GOLFILT = '';
+const GOLCLS = { 'Rand de deviz neincadrat':'c1', 'P fara leaf':'c2', 'Exceptie structurala':'c3', 'Leaf fara criteriu de asociere':'c4' };
+const GOLEXPL = {
+  'Rand de deviz neincadrat': 'Linii din devizele importate care nu au primit un P. Fie lipseste locul in arbore (galben, se rezolva cu structura), fie linia nu e produs (cod, "idem", diferenta de pret, manopera generica).',
+  'P fara leaf': 'P-uri active in dictionar care nu sunt atasate niciunui leaf. Nu apar in nicio fisa de lucrare pana nu primesc un loc.',
+  'Exceptie structurala': 'Decizii de structura semnalate si lasate deschise: familii sau leafuri care lipsesc din arbore, plus contaminari de mapare.',
+  'Leaf fara criteriu de asociere': 'Leafuri marcate GENERAT dar cu campul criteriu_asociere gol — au descriere, dar nu au regula de incadrare.'
+};
+
+async function renderGoluri(v){
+  nomPane.innerHTML = '<div class="loading" style="padding:16px">se incarca...</div>';
+  try{
+    if(!GOLURI) GOLURI = await q('/viz_goluri?select=*&order=ord,categorie,cheie&limit=2000');
+    const badge = document.getElementById('gol-badge');
+    if(badge){ badge.textContent = GOLURI.length; badge.classList.add('on'); }
+    const cats = {};
+    GOLURI.forEach(g=> cats[g.categorie] = (cats[g.categorie]||0)+1);
+    const term = (v||'').toLowerCase();
+    let rows = GOLURI.filter(g=> (!GOLFILT || g.categorie===GOLFILT));
+    if(term) rows = rows.filter(g=> (g.denumire+' '+g.detaliu+' '+g.cheie+' '+g.subcategorie+' '+g.context).toLowerCase().includes(term));
+
+    const chips = `<div class="golchip${GOLFILT?'':' on'}" data-c="">Toate <b>${GOLURI.length}</b></div>` +
+      Object.entries(cats).map(([c,n])=>`<div class="golchip${GOLFILT===c?' on':''}" data-c="${esc(c)}">${esc(c)} <b>${n}</b></div>`).join('');
+    const expl = GOLFILT ? GOLEXPL[GOLFILT] : 'Index al lucrurilor ramase de decis: randuri de deviz care nu au putut fi incadrate, P-uri fara leaf, exceptii structurale deschise si leafuri cu text incomplet. Click pe un cod PU- deschide P-ul in nomenclator; click pe un cod de nod il deschide in arbore.';
+
+    const head = `<tr><th style="width:150px">Categorie</th><th style="width:150px">Tip</th><th style="width:90px">Cod</th><th style="width:30%">Denumire</th><th>Detaliu / nota</th><th style="width:16%">Context</th></tr>`;
+    const body = rows.map(g=>{
+      const isP = /^PU-\d+$/.test(g.cheie), isNod = /^[A-Z]{3}(\.\d+)+$/.test(g.cheie);
+      const key = (isP||isNod) ? `<span class="gol-key gol-link" data-go="${isP?'p':'nod'}" data-id="${esc(g.cheie)}">${esc(g.cheie)}</span>` : `<span class="gol-key">${esc(g.cheie)}</span>`;
+      return `<tr><td><span class="gol-cat ${GOLCLS[g.categorie]||''}">${esc(g.categorie)}</span></td>
+        <td class="gol-det">${esc(g.subcategorie)}</td>
+        <td>${key}</td>
+        <td><b>${esc(g.denumire)}</b>${g.um?` <span class="p-um">${esc(g.um)}</span>`:''}</td>
+        <td class="gol-det">${esc(g.detaliu)}</td>
+        <td class="gol-det">${esc(g.context)}</td></tr>`;
+    }).join('');
+
+    nomPane.innerHTML = `<div class="golfilt">${chips}</div><div class="golnote">${esc(expl)}</div>`
+      + `<div class="nomtool"><span class="sr-count">${rows.length} intrari${term?' care contin "'+esc(v)+'"':''}</span>
+         <span class="hint" style="margin:0">lista se discuta si se inchide pe masura ce se iau deciziile de structura</span></div>`
+      + `<table class="ntab"><thead>${head}</thead><tbody>${body}</tbody></table>`
+      + (rows.length ? '' : '<div class="loading" style="padding:16px">nimic gasit</div>');
+
+    nomPane.querySelectorAll('.golchip').forEach(c=> c.onclick = ()=>{ GOLFILT = c.dataset.c; renderGoluri(curSearch()); });
+    nomPane.querySelectorAll('.gol-link').forEach(el=> el.onclick = ()=>{
+      if(el.dataset.go==='p') gotoNom('p', el.dataset.id);
+      else { setMode('tree'); showDetail(el.dataset.id); }
+    });
+  }catch(err){ nomPane.innerHTML = '<div class="loading" style="padding:16px">eroare: '+esc(err.message)+'</div>'; }
+}
+
 async function renderNomTable(v){
+  if(MODE==='goluri') return renderGoluri(v);
   nomPane.innerHTML = '<div class="loading" style="padding:16px">se incarca...</div>';
   try{
     const e = encodeURIComponent('%'+v+'%');
@@ -1099,11 +1170,492 @@ async function doSearch(v){
     const cnt = await fetch(SB_URL+'/viz_noduri?tip=eq.leaf&select=nod_id&limit=1', {headers:{...HDRS, Prefer:'count=exact'}});
     const total = cnt.headers.get('content-range')?.split('/')[1] || '?';
     document.getElementById('stats').textContent = total + ' leafuri in taxonomie';
+    try{
+      const gc = await fetch(SB_URL+'/viz_goluri?select=cheie&limit=1', {headers:{...HDRS, Prefer:'count=exact'}});
+      const gt = gc.headers.get('content-range')?.split('/')[1];
+      const badge = document.getElementById('gol-badge');
+      if(gt && badge && +gt > 0){ badge.textContent = gt; badge.classList.add('on'); }
+    }catch(e){}
   }catch(err){
     treeRoot.innerHTML='<div class="loading">Eroare la conectare: '+esc(err.message)+'</div>';
     document.getElementById('stats').textContent='eroare';
   }
 })();
 </script>
+
+
+
+
+
+
+
+<script>
+/* ==== AI: prompturi oficiale (runner fundal + reluare erori + matrice ca mod) ==== */
+const AI_FN_URL = 'https://enlzznpzkdhbdsxffavf.supabase.co/functions/v1/ai-descrieri';
+const AI_TIPURI = [
+  { id:'descriere', nume:'Descriere si Asociere', activ:true },
+  { id:'caiete',    nume:'Prompt pentru caiete de sarcini', activ:true },
+  { id:'capitole',  nume:'Prompt pentru capitole', activ:true },
+];
+const AI_MODELE = [
+  { id:'claude-opus-5',   nume:'Claude Opus 5 (recomandat - calitate maxima)', cost:'~0.04-0.08 $/nod' },
+  { id:'claude-sonnet-5', nume:'Claude Sonnet 5 (echilibrat)',                 cost:'~0.02-0.04 $/nod' },
+  { id:'claude-haiku-4-5',nume:'Claude Haiku 4.5 (rapid si ieftin)',           cost:'~0.005-0.01 $/nod' },
+];
+
+(function aiFaraPin(){
+  try{ if(!localStorage.getItem('quadra_pin')) localStorage.setItem('quadra_pin','x'); }catch(e){}
+  try{ if(typeof PIN!=='undefined' && !PIN) PIN='x'; }catch(e){}
+})();
+
+const AI = { running:false, stop:false, cfg:null, facut:0, total:null, ramase:null, erori:0, ultima:'' };
+const AI_LOGS = [];
+function aiLog(t, err){ AI_LOGS.unshift({t,err}); if(AI_LOGS.length>250) AI_LOGS.pop();
+  const lg=document.getElementById('ai-log'); if(lg){ const d=document.createElement('div'); if(err)d.style.color='#f87171'; d.textContent=t; lg.prepend(d); } }
+
+// ---- Buton in antet + fila "Matrice" in grupul de moduri ----
+(function aiInit(){
+  function monteaza(){
+    const gazda = document.querySelector('header') || document.body;
+    if(!gazda) return false;
+    if(!document.getElementById('ai-desc-btn')){
+      const b=document.createElement('button'); b.className='btn primary'; b.id='ai-desc-btn';
+      b.innerHTML='&#10024; AI prompturi'; b.style.marginLeft='auto';
+      b.title='Dezvolta prompturile oficiale cu Claude (ruleaza in fundal)'; b.onclick=aiModal;
+      gazda.appendChild(b);
+    }
+    // fila de mod "Matrice" langa Arbore/Nomenclator P/Parametri
+    const modes=document.querySelector('.modes');
+    if(modes && !modes.querySelector('[data-m="matrice"]')){
+      const t=document.createElement('button'); t.className='mode-btn'; t.dataset.m='matrice'; t.textContent='Matrice';
+      t.onclick=()=>setMode('matrice'); modes.appendChild(t);
+    }
+    return true;
+  }
+  if(!monteaza()) document.addEventListener('DOMContentLoaded', monteaza);
+})();
+
+// ---- Extind setMode ca sa randeze matricea in panoul principal (mod permanent) ----
+if(typeof setMode==='function'){
+  const _setModeOrig = setMode;
+  setMode = function(m){
+    if(m==='matrice'){
+      MODE='matrice';
+      document.querySelectorAll('.mode-btn').forEach(b=> b.classList.toggle('active', b.dataset.m==='matrice'));
+      try{ treePane.style.display='none'; }catch(e){}
+      try{ detail.style.display='none'; }catch(e){}
+      const np = document.getElementById('nom-pane');
+      if(np){ np.style.display='block'; renderMatricePane(np); }
+      const sr=document.getElementById('search-results'); if(sr) sr.style.display='none';
+      const sb=document.getElementById('search'); if(sb){ sb.value=''; sb.placeholder='Matrice de acoperire pe capitole'; }
+      return;
+    }
+    return _setModeOrig(m);
+  };
+}
+
+async function aiApel(body){
+  const r = await fetch(AI_FN_URL, { method:'POST', headers:{ 'Content-Type':'application/json', apikey:SB_KEY, Authorization:'Bearer '+SB_KEY }, body: JSON.stringify(body) });
+  const j = await r.json().catch(()=>({error:'raspuns invalid'}));
+  if(!r.ok || j.error){ if(r.status===401){ PIN=''; localStorage.removeItem('quadra_pin'); } throw new Error(j.error || ('HTTP '+r.status)); }
+  return j;
+}
+async function aiCount(filtru){
+  const r = await fetch(`${SB_URL}/viz_ai_prompturi?${filtru}&select=nod_id&limit=1`, { headers:{...HDRS, Prefer:'count=exact', Range:'0-0'} });
+  return parseInt((r.headers.get('content-range')||'/0').split('/')[1]||'0',10)||0;
+}
+
+// ---- Indicator fix (persista cat ruleaza, oriunde ai naviga) ----
+function aiPill(){
+  let el=document.getElementById('ai-pill');
+  if(!AI.running){ if(el) el.remove(); return; }
+  if(!el){ el=document.createElement('div'); el.id='ai-pill';
+    el.style.cssText='position:fixed;bottom:16px;left:16px;z-index:80;background:var(--panel);border:1px solid var(--accent);border-radius:10px;padding:8px 12px;font-size:12.5px;display:flex;gap:12px;align-items:center;box-shadow:0 8px 24px rgba(0,0,0,.45);max-width:min(560px,92vw)';
+    document.body.appendChild(el); }
+  const t=AI.total||0, f=AI.facut||0, pct=t?Math.round(100*f/t):0;
+  el.innerHTML = `<span>&#10024; <b>AI lucreaza in fundal</b> &middot; ${f}${t?`/${t}`:''} (${pct}%)${AI.ramase!=null?` &middot; ramase ${AI.ramase}`:''}${AI.erori?` &middot; <span style="color:#f87171">erori ${AI.erori}</span>`:''}${AI.ultima?` &middot; <span style="color:var(--muted)">${esc(AI.ultima)}</span>`:''}</span><button class="btn mini" id="ai-pill-stop">opreste</button>`;
+  el.querySelector('#ai-pill-stop').onclick=()=>{ AI.stop=true; el.querySelector('#ai-pill-stop').textContent='se opreste...'; };
+}
+
+// ---- Runnerul (independent de modal) ----
+async function aiStart(cfg){
+  if(AI.running){ toast('Deja ruleaza. Poti inchide fereastra si te poti plimba.', false); return; }
+  Object.assign(AI, { running:true, stop:false, cfg, facut:0, total:null, ramase:null, erori:0, ultima:'' });
+  aiPill(); aiSyncModal();
+  let eroriConsec=0;
+  try{
+    while(!AI.stop){
+      const r = await aiApel({ pin:PIN, tip:cfg.tip, scope:cfg.scope, nod_id:cfg.nodId||'', model:cfg.model, batch:1, doar_neprocesate:cfg.skip });
+      AI.total=r.total_scope; AI.facut=r.facute; AI.ramase=r.ramase; AI.erori=r.erori;
+      for(const p of (r.procesate||[])){
+        AI.ultima=p.denumire;
+        if(p.ok){ eroriConsec=0; aiLog(`OK  ${p.nod_id}  ${p.denumire}`+(p.sinonime_adaugate?`  (+${p.sinonime_adaugate} sinonime)`:'')); }
+        else { eroriConsec++; aiLog(`ERR ${p.nod_id}  ${p.eroare}`, true); }
+      }
+      aiPill(); aiSyncModal();
+      if(r.ramase<=0){ aiLog('GATA - domeniul este complet oficializat.'); break; }
+      if(!r.procesate||!r.procesate.length){ aiLog('Nimic de procesat in domeniul ales.'); break; }
+      if(eroriConsec>=3){ aiLog('Oprit automat dupa 3 erori consecutive - vezi/reia erorile.', true); break; }
+    }
+  }catch(err){ aiLog('Eroare: '+err.message, true); toast(err.message, true); }
+  AI.running=false; aiPill(); aiSyncModal();
+  if(MODE==='matrice'){ const np=document.getElementById('nom-pane'); if(np) renderMatricePane(np); }
+  if(typeof currentId!=='undefined' && currentId && typeof showDetail==='function') showDetail(currentId);
+}
+function aiSyncModal(){
+  const st=document.getElementById('ai-status'), bar=document.getElementById('ai-bar'), start=document.getElementById('ai-start'), stop=document.getElementById('ai-stop');
+  if(!st) return;
+  const t=AI.total||0, f=AI.facut||0;
+  bar && (bar.style.width = t?Math.round(100*f/t)+'%':'0%');
+  if(AI.running){ st.textContent=`ruleaza in fundal: oficializate ${f}${t?` / ${t}`:''}, erori ${AI.erori}, ramase ${AI.ramase} - poti inchide fereastra`; start&&(start.disabled=true); stop&&(stop.disabled=false); }
+  else { st.innerHTML='&nbsp;'; start&&(start.disabled=false); stop&&(stop.disabled=true); }
+}
+
+function aiModal(){
+  if(!PIN){ try{ localStorage.setItem('quadra_pin','x'); }catch(e){} PIN='x'; }
+  const nodSel = (typeof currentId!=='undefined' && currentId) ? (nodeCache[currentId]?.denumire || currentId) : null;
+  const m = showModal('&#10024; Prompturi oficiale cu AI (Claude)', `
+    <div class="hint">Apesi <b>porneste</b> si AI-ul lucreaza in <b>fundal</b>: poti inchide fereastra si te poti plimba prin platforma; el continua (indicatorul din stanga-jos are progres si buton de oprire). Se reia oricand de unde a ramas. Merge de sus in jos, SI pe categorii SI pe leafuri; fiecare nod primeste ca context TOATA structura superioara. O eroare pe un nod NU blocheaza restul - o reiei separat (optiunea "doar erorile").</div>
+    <label>Ce prompt imbunatatim</label>
+    <select id="ai-tip">${AI_TIPURI.map(t=>`<option value="${t.id}" ${t.activ?'':'disabled'}>${t.nume}${t.activ?'':' (regulile urmeaza)'}</option>`).join('')}</select>
+    <label>Domeniu de lucru</label>
+    <div style="margin:4px 0 10px; display:flex; flex-direction:column; gap:6px; font-size:13px;">
+      <label style="display:flex;gap:8px;align-items:center;"><input type="radio" name="ai-scope" value="nod" ${nodSel?'checked':''} ${nodSel?'':'disabled'}> nodul selectat${nodSel?': <b style="color:var(--accent)">'+esc(nodSel)+'</b>':' <span class="hint">(selecteaza intai un nod)</span>'}</label>
+      <label style="display:flex;gap:8px;align-items:center;"><input type="radio" name="ai-scope" value="ramura" ${nodSel?'':'disabled'}> nodul selectat + descendentii (ramura)</label>
+      <label style="display:flex;gap:8px;align-items:center;"><input type="radio" name="ai-scope" value="tot" ${nodSel?'':'checked'}> toata taxonomia (17.225 noduri)</label>
+      <label style="display:flex;gap:8px;align-items:center;color:#fbbf24"><input type="radio" name="ai-scope" value="erori"> doar erorile - reincearca (<span id="ai-nrerori">?</span>)</label>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;color:var(--text);"><input type="checkbox" id="ai-skip" checked> sar peste nodurile deja atinse (continua de unde a ramas)</label>
+    <label style="margin-top:10px;display:block;">Model Claude</label>
+    <select id="ai-model">${AI_MODELE.map(x=>`<option value="${x.id}">${x.nume} &middot; ${x.cost}</option>`).join('')}</select>
+    <div id="ai-evidenta" style="margin-top:8px;font-size:12.5px;color:var(--muted)">se incarca evidenta...</div>
+    <div id="ai-status" style="margin-top:8px;font-size:12.5px;color:var(--muted)">&nbsp;</div>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;height:10px;overflow:hidden;margin:6px 0 10px;"><div id="ai-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#0ea5e9,#34d399);transition:width .3s;"></div></div>
+    <div id="ai-log" style="max-height:150px;overflow-y:auto;font-size:12px;line-height:1.6;font-family:ui-monospace,Menlo,monospace;"></div>
+  `, `<button class="btn" id="ai-stop" disabled>opreste</button><button class="btn primary" id="ai-start">porneste</button>`);
+  const elEv=m.querySelector('#ai-evidenta'), elTip=m.querySelector('#ai-tip'), elLog=m.querySelector('#ai-log');
+  AI_LOGS.slice().reverse().forEach(x=>{ const d=document.createElement('div'); if(x.err)d.style.color='#f87171'; d.textContent=x.t; elLog.prepend(d); });
+  async function ev(){ try{
+    const [ok,er]=await Promise.all([aiCount(`tip=eq.${elTip.value}&status=eq.ok`), aiCount(`tip=eq.${elTip.value}&status=eq.eroare`)]);
+    elEv.innerHTML=`Evidenta (tip: <b>${esc(elTip.value)}</b>): <span style="color:var(--green)">&#10004; oficializate ${ok}</span> &middot; <span style="color:#f87171">&#10008; erori ${er}</span> &middot; ramase ${Math.max(0,17225-ok-er)}`;
+    const ne=document.getElementById('ai-nrerori'); if(ne) ne.textContent=er;
+  }catch(e){ elEv.textContent='evidenta indisponibila'; } }
+  ev(); elTip.onchange=ev; aiSyncModal();
+  m.querySelector('#ai-start').onclick=()=>{
+    const scope=(m.querySelector('input[name=ai-scope]:checked')||{}).value||'tot';
+    if((scope==='nod'||scope==='ramura') && !currentId){ toast('Selecteaza intai un nod.', true); return; }
+    if(scope==='tot' && !confirm('Pornesc pe TOATA taxonomia? Lucreaza in fundal; poti opri din indicatorul din stanga-jos.')) return;
+    aiStart({ tip:elTip.value, scope, nodId: currentId||'', model:m.querySelector('#ai-model').value, skip:m.querySelector('#ai-skip').checked });
+  };
+  m.querySelector('#ai-stop').onclick=()=>{ AI.stop=true; };
+}
+
+// ================= MATRICE (ca mod permanent in panoul principal) =================
+let MX_DRUM = [{id:null, nume:'Toata taxonomia'}];
+let MX_TIP = 'descriere';
+async function rpcMatrice(nod, tip){
+  const r=await fetch(`${SB_URL}/rpc/matrice_acoperire`, { method:'POST', headers:{...HDRS,'Content-Type':'application/json'}, body: JSON.stringify({_nod:nod, _tip:tip}) });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+function mxBar(x,y,cul0){ const p=y?Math.round(100*x/y):0; const cul=cul0||(p>=100?'#34d399':p>=50?'#fbbf24':p>0?'#0ea5e9':'#475569');
+  return `<div style="display:flex;align-items:center;gap:6px"><div style="flex:1;min-width:60px;background:var(--bg);border-radius:5px;height:8px;overflow:hidden"><div style="height:100%;width:${p}%;background:${cul}"></div></div><span style="font-size:11px;white-space:nowrap">${x}/${y} (${p}%)</span></div>`; }
+async function renderMatricePane(pane){
+  const nod=MX_DRUM[MX_DRUM.length-1].id;
+  pane.style.padding='16px 20px 60px';
+  pane.innerHTML=`
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <h2 style="font-size:16px;color:var(--accent);margin:0">&#128202; Matrice de acoperire pe capitole</h2>
+      <label style="font-size:12px;color:var(--muted)">tip prompt:</label>
+      <select id="mx-tip" class="btn" style="padding:5px 8px">${AI_TIPURI.map(t=>`<option value="${t.id}" ${t.id===MX_TIP?'selected':''}>${t.nume}</option>`).join('')}</select>
+      <button class="btn mini" id="mx-refresh">reimprospateaza</button>
+      <button class="btn mini danger" id="mx-reia" style="display:none">reia erorile (<span id="mx-nrerori">0</span>)</button>
+    </div>
+    <div class="hint" style="margin:0 0 8px">Descrieri completate = au text; AI imbunatatit = trecute prin AI (progresul real). Click pe un rand cu &#9656; pentru sub-capitole. P-uri = articole; Parametri = asignari de parametri, insumate pe capitol.</div>
+    <div id="mx-drum" style="font-size:12px;color:var(--muted);margin:6px 0 8px"></div>
+    <div id="mx-body" style="overflow-x:auto"><div class="loading">se incarca...</div></div>`;
+  const tipEl=pane.querySelector('#mx-tip'), body=pane.querySelector('#mx-body'), drumEl=pane.querySelector('#mx-drum'), reia=pane.querySelector('#mx-reia');
+  tipEl.onchange=()=>{ MX_TIP=tipEl.value; renderMatricePane(pane); };
+  pane.querySelector('#mx-refresh').onclick=()=>renderMatricePane(pane);
+  reia.onclick=()=>{ if(!confirm('Reincerc toate nodurile cu eroare pentru tipul "'+MX_TIP+'"? Ruleaza in fundal.')) return;
+    aiStart({ tip:MX_TIP, scope:'erori', nodId:'', model:'claude-opus-5', skip:false }); };
+  drumEl.innerHTML=MX_DRUM.map((d,i)=> i<MX_DRUM.length-1?`<a href="#" data-i="${i}" style="color:var(--accent)">${esc(d.nume)}</a>`:`<b>${esc(d.nume)}</b>`).join(' &rsaquo; ');
+  drumEl.querySelectorAll('a').forEach(a=> a.onclick=e=>{ e.preventDefault(); MX_DRUM=MX_DRUM.slice(0,+a.dataset.i+1); renderMatricePane(pane); });
+  try{
+    const rows=await rpcMatrice(nod, MX_TIP);
+    const tot={n:0,l:0,d:0,ai:0,er:0,p:0,prm:0};
+    rows.forEach(r=>{ tot.n+=r.noduri_total; tot.l+=r.leafuri_total; tot.d+=r.desc_completate; tot.ai+=r.ai_imbunatatite; tot.er+=r.ai_erori; tot.p+=+r.nr_p; tot.prm+=+r.nr_prm; });
+    // nr total de erori pe tot tipul (nu doar sub nodul curent) pentru butonul de reluare
+    const erTot = await aiCount(`tip=eq.${MX_TIP}&status=eq.eroare`);
+    pane.querySelector('#mx-nrerori').textContent=erTot; reia.style.display = erTot>0?'':'none';
+    const th='padding:7px 9px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--accent);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg)';
+    const td='padding:7px 9px;border-bottom:1px solid #1c2942;font-size:12.5px;vertical-align:middle';
+    let h=`<table style="border-collapse:collapse;width:100%;min-width:820px"><thead><tr>
+      <th style="${th}">Capitol</th><th style="${th}">Descrieri completate</th><th style="${th}">AI imbunatatite</th>
+      <th style="${th};text-align:right">Erori</th><th style="${th};text-align:right">Leafuri</th><th style="${th};text-align:right">P-uri</th><th style="${th};text-align:right">Parametri</th></tr></thead><tbody>`;
+    rows.forEach((r,i)=>{
+      h+=`<tr data-i="${i}" data-copii="${r.are_copii?1:0}" style="${r.are_copii?'cursor:pointer':''}">
+        <td style="${td}">${r.are_copii?'<span style="color:var(--muted)">&#9656;</span> ':'<span style="opacity:.3">&#8226;</span> '}<span class="node-id" style="font-size:10px">${esc(r.nod_id)}</span> <b>${esc(r.denumire)}</b> <span style="font-size:10px;color:var(--muted)">${esc(r.tip)}</span></td>
+        <td style="${td};min-width:150px">${mxBar(r.desc_completate, r.noduri_total)}</td>
+        <td style="${td};min-width:150px">${mxBar(r.ai_imbunatatite, r.noduri_total)}</td>
+        <td style="${td};text-align:right">${r.ai_erori?`<span style="color:#f87171">${r.ai_erori}</span>`:'0'}</td>
+        <td style="${td};text-align:right">${r.leafuri_total}</td>
+        <td style="${td};text-align:right;color:var(--p-col)">${r.nr_p}</td>
+        <td style="${td};text-align:right;color:var(--green)">${r.nr_prm}</td></tr>`;
+    });
+    h+=`<tr style="border-top:2px solid var(--border);font-weight:600">
+      <td style="${td}">TOTAL (${rows.length} capitole)</td><td style="${td}">${mxBar(tot.d,tot.n)}</td><td style="${td}">${mxBar(tot.ai,tot.n)}</td>
+      <td style="${td};text-align:right">${tot.er?`<span style="color:#f87171">${tot.er}</span>`:'0'}</td><td style="${td};text-align:right">${tot.l}</td><td style="${td};text-align:right;color:var(--p-col)">${tot.p}</td><td style="${td};text-align:right;color:var(--green)">${tot.prm}</td></tr></tbody></table>`;
+    body.innerHTML=h;
+    body.querySelectorAll('tr[data-copii="1"]').forEach(tr=> tr.onclick=()=>{ const r=rows[+tr.dataset.i]; MX_DRUM.push({id:r.nod_id, nume:r.denumire}); renderMatricePane(pane); });
+  }catch(e){ body.innerHTML='<div class="hint">eroare: '+esc(e.message)+'</div>'; }
+}
+
+// ================= GESTIUNE STRUCTURA (adauga/sterge leafuri, colapseaza capitol) =================
+async function structRefreshArbore(){
+  // reincarca lazy copiii in arbore (daca nodul e expandat) - altfel se reincarca la re-expandare
+  try{ document.querySelectorAll('#tree-root .children.open').forEach(k=>{ k.dataset.loaded=''; }); }catch(e){}
+}
+async function structAdaugaLeaf(nodId){
+  const den = (prompt('Denumirea noului leaf (sub acest capitol):')||'').trim();
+  if(den.length<2){ if(den) toast('Denumire prea scurta.', true); return; }
+  try{ const idn = await rpc('edit_creeaza_leaf', { _parinte:nodId, _denumire:den });
+    toast('Leaf nou creat: '+idn); await structRefreshArbore();
+    if(MODE!=='tree') setMode('tree'); showDetail(idn);
+  }catch(err){ toast(err.message, true); }
+}
+async function structColapsaza(nodId, denum){
+  if(!confirm(`Colapsez capitolul "${denum}" intr-un singur leaf?\nTOATE leafurile-copil se sterg, iar P-urile lor urca pe acest capitol (care devine leaf). Ireversibil.`)) return;
+  try{ const r = await rpc('edit_colapseaza_capitol', { _capitol:nodId });
+    toast(r); await structRefreshArbore(); showDetail(nodId);
+  }catch(err){ toast(err.message, true); }
+}
+async function undoLista(){
+  try{ const l = await rpc('edit_undo_list', {}); return Array.isArray(l)?l:[]; }catch(e){ return []; }
+}
+async function structReverse(){
+  const lst = await undoLista();
+  if(!lst.length){ toast('Nimic de anulat.'); return; }
+  const u = lst[0];
+  if(!confirm(`Anulez ultima modificare de structura?\n\n"${u.descriere||'ultima operatie'}"\n\nDisponibile pentru anulare: ${lst.length} (se pot anula pana la 3 la rand). Se readuc nodurile, P-urile si parametrii exact ca inainte.`)) return;
+  try{
+    const r = await rpc('edit_undo', {});
+    toast(r); await structRefreshArbore();
+    try{
+      if(currentId){
+        const still = await q(`/viz_noduri?nod_id=eq.${encodeURIComponent(currentId)}&select=nod_id`);
+        if(still.length) showDetail(currentId); else setMode('tree');
+      }
+    }catch(e){ setMode('tree'); }
+  }catch(err){ toast(err.message, true); }
+}
+async function modalStergeLeaf(n){
+  // date: parintele (capitolul superior), fratii, P-urile leafului
+  let puri=[], copii=[], parinte=null;
+  try{
+    puri = await q(`/viz_leaf_p?leaf_id=eq.${encodeURIComponent(n.nod_id)}&select=p_id,denumire&order=pozitie`);
+    if(n.parinte_id){
+      parinte = (await q(`/viz_noduri?nod_id=eq.${encodeURIComponent(n.parinte_id)}&select=nod_id,denumire,tip`))[0]||null;
+      copii = await q(`/viz_noduri?parinte_id=eq.${encodeURIComponent(n.parinte_id)}&select=nod_id,denumire,tip&order=nod_id`);
+    }
+  }catch(e){ toast('Nu am putut incarca datele: '+e.message, true); return; }
+  const frati = copii.filter(c=>c.tip==='leaf' && c.nod_id!==n.nod_id);
+  const totLeafuri = copii.filter(c=>c.tip==='leaf');           // toate leafurile capitolului (incl. n)
+  const capitolDoarLeafuri = copii.length>0 && copii.every(c=>c.tip==='leaf');
+  const capId = parinte? parinte.nod_id : null;
+  const capDen = parinte? parinte.denumire : '(fara capitol)';
+  const numeTinta = id => id===capId ? ('capitolul „'+capDen+'”') : (frati.find(f=>f.nod_id===id)?.denumire || id);
+
+  // --- rand per P: tinte = capitolul superior + leafurile-frati (bifare multipla) ---
+  const optTinta = (p,val,label,accent) => `<label style="display:inline-flex;gap:5px;align-items:center;margin:2px 10px 2px 0;font-size:12px;${accent?'font-weight:600;color:var(--accent)':''}"><input type="checkbox" class="mv" data-p="${esc(p.p_id)}" value="${esc(val)}"> ${label}</label>`;
+  const randP = p => `<div class="pcard" data-p="${esc(p.p_id)}" style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+      <div style="font-size:12.5px;margin-bottom:5px"><span class="p-id">${esc(p.p_id)}</span> <b>${esc(p.denumire)}</b> <span class="pstat" style="float:right;font-size:11px"></span></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:3px">unde se muta (poti alege mai multe):</div>
+      ${capId?optTinta(p,capId,'&#11014; '+esc(capDen)+' (capitol superior)',true):''}
+      ${frati.map(f=>optTinta(p,f.nod_id,esc(f.denumire))).join('')}
+    </div>`;
+
+  const paneLeaf = `
+    <div class="hint">Se sterge <b>doar</b> leaful <b>${esc(n.denumire)}</b>. Pentru fiecare articol (P) de mai jos alege unde se muta; ce ramane nebifat <b style="color:#f87171">se pierde</b>.</div>
+    ${puri.length ? `<div style="margin:4px 0 6px;display:flex;gap:6px;flex-wrap:wrap">
+        ${capId?`<button class="btn mini" id="mv-cap">muta tot pe capitol</button>`:''}
+        ${frati.length?`<button class="btn mini" id="mv-frate1">muta tot pe „${esc(frati[0].denumire)}”</button>`:''}
+        <button class="btn mini" id="mv-clear">nu muta nimic</button>
+      </div>
+      <div style="max-height:240px;overflow-y:auto">${puri.map(randP).join('')}</div>`
+      : `<div class="hint">Leaful nu are articole (P) — se sterge simplu.</div>`}`;
+
+  const paneCap = capId ? `
+    <div class="hint">Se sterg <b>TOATE cele ${totLeafuri.length} leafuri</b> din capitolul <b>${esc(capDen)}</b>${frati.length?` (inclusiv „${esc(n.denumire)}” si: ${frati.map(f=>'„'+esc(f.denumire)+'”').join(', ')})`:''}.</div>
+    <div style="border:1px solid var(--border);border-radius:8px;padding:10px;font-size:13px;line-height:1.6">
+      &#11014; <b>Toate articolele (P) ale acestor leafuri urca pe capitolul „${esc(capDen)}”</b>, care devine el insusi leaf. Nu se pierde niciun P.
+    </div>
+    ${!capitolDoarLeafuri ? `<div class="hint" style="color:#f87171;margin-top:8px">&#9888; Indisponibil: capitolul „${esc(capDen)}” contine si sub-categorii, nu doar leafuri. Sterge/muta intai sub-categoriile, sau foloseste scenariul de sus pentru cate un leaf.</div>` : ''}`
+    : `<div class="hint">Acest leaf nu are un capitol superior.</div>`;
+
+  const body = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12.5px;line-height:1.7">
+      Leaf: <b>${esc(n.denumire)}</b> <span class="p-id">${esc(n.nod_id)}</span><br>
+      Capitol superior: <b>${esc(capDen)}</b>${capId?` <span class="p-id">${esc(capId)}</span>`:''} &middot; articole (P) pe acest leaf: <b>${puri.length}</b>
+    </div>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:13.5px;font-weight:600;margin:2px 0"><input type="radio" name="delmode" value="leaf" checked style="margin-top:3px"> &#128465; Sterg DOAR acest leaf</label>
+    <div id="pane-leaf" style="margin:4px 0 12px 22px">${paneLeaf}</div>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:13.5px;font-weight:600;margin:2px 0;${(!capId||!capitolDoarLeafuri)?'opacity:.55':''}"><input type="radio" name="delmode" value="capitol" ${(!capId||!capitolDoarLeafuri)?'disabled':''} style="margin-top:3px"> &#128193; Sterg TOATE leafurile capitolului „${esc(capDen)}”</label>
+    <div id="pane-capitol" style="margin:4px 0 4px 22px;display:none">${paneCap}</div>`;
+
+  const foot = `<button class="btn" id="sl-cancel">renunta</button>
+    <button class="btn" id="sl-back" style="display:none">&#8592; inapoi</button>
+    <button class="btn primary" id="sl-next">continua &#8594;</button>
+    <button class="btn danger primary" id="sl-ok" style="display:none">DA, sterge definitiv</button>`;
+  const m = showModal('&#128465; Stergere structura', body, foot);
+  const $=s=>m.querySelector(s), paneL=$('#pane-leaf'), paneC=$('#pane-capitol');
+  const bNext=$('#sl-next'), bBack=$('#sl-back'), bOk=$('#sl-ok');
+
+  function modul(){ return (m.querySelector('input[name=delmode]:checked')||{}).value||'leaf'; }
+  function refreshStare(){
+    // pentru modul "leaf": marcheaza fiecare P ca mutat / se pierde
+    puri.forEach(p=>{
+      const card=m.querySelector(`.pcard[data-p="${CSS.escape(p.p_id)}"]`); if(!card) return;
+      const chk=card.querySelectorAll('input.mv:checked').length;
+      const st=card.querySelector('.pstat');
+      if(chk){ st.textContent='se muta'; st.style.color='var(--green)'; card.style.borderColor='var(--border)'; }
+      else { st.textContent='SE PIERDE'; st.style.color='#f87171'; card.style.borderColor='#f8717155'; }
+    });
+  }
+  m.querySelectorAll('input[name=delmode]').forEach(r=> r.onchange=()=>{
+    const md=modul(); paneL.style.display = md==='leaf'?'':'none'; paneC.style.display = md==='capitol'?'':'none';
+  });
+  paneL.addEventListener('change', e=>{ if(e.target.classList.contains('mv')) refreshStare(); });
+  if($('#mv-cap')) $('#mv-cap').onclick=()=>{ m.querySelectorAll('.pcard').forEach(c=>{ c.querySelectorAll('input.mv').forEach(x=> x.checked = x.value===capId); }); refreshStare(); };
+  if($('#mv-frate1')) $('#mv-frate1').onclick=()=>{ const f=frati[0].nod_id; m.querySelectorAll('.pcard').forEach(c=>{ c.querySelectorAll('input.mv').forEach(x=> x.checked = x.value===f); }); refreshStare(); };
+  if($('#mv-clear')) $('#mv-clear').onclick=()=>{ m.querySelectorAll('input.mv').forEach(x=> x.checked=false); refreshStare(); };
+  refreshStare();
+
+  $('#sl-cancel').onclick=closeModal;
+
+  // ---- pasul 2: rezumat + a doua confirmare ----
+  let plan=null;
+  function construiestePlan(){
+    const md=modul();
+    if(md==='capitol'){
+      return { mod:'capitol', rez:`
+        <div style="font-size:13px;line-height:1.7">
+          Se <b style="color:#f87171">STERG ${totLeafuri.length} leafuri</b> din capitolul <b>${esc(capDen)}</b>.<br>
+          &#11014; Toate articolele lor urca pe <b>„${esc(capDen)}”</b>, care devine leaf. Niciun P nu se pierde.
+        </div>` };
+    }
+    const asign={}; m.querySelectorAll('input.mv:checked').forEach(c=>{ (asign[c.dataset.p]=asign[c.dataset.p]||[]).push(c.value); });
+    const _assignari = Object.keys(asign).map(p=>({p_id:p, targets:asign[p]}));
+    const lines = puri.map(p=>{
+      const t=asign[p.p_id];
+      return t && t.length
+        ? `<div>&#8226; <b>${esc(p.denumire)}</b> &#8594; ${t.map(numeTinta).map(esc).join(', ')}</div>`
+        : `<div style="color:#f87171">&#8226; <b>${esc(p.denumire)}</b> &#8594; SE PIERDE</div>`;
+    }).join('');
+    const npierd = puri.filter(p=>!asign[p.p_id]).length;
+    return { mod:'leaf', _assignari, rez:`
+      <div style="font-size:13px;line-height:1.7">
+        Se <b style="color:#f87171">STERGE</b> leaful <b>${esc(n.denumire)}</b>.
+        ${puri.length?`<div style="margin-top:6px;max-height:180px;overflow:auto">${lines}</div>
+        <div style="margin-top:6px">${npierd?`<b style="color:#f87171">${npierd} articol(e) se pierd definitiv.</b>`:'Toate articolele se muta — nu se pierde nimic.'}</div>`:'Leaful nu are articole.'}
+      </div>` };
+  }
+  bNext.onclick=()=>{
+    if(modul()==='capitol' && (!capId || !capitolDoarLeafuri)) return;
+    plan=construiestePlan();
+    paneL.style.display='none'; paneC.style.display='none';
+    m.querySelectorAll('input[name=delmode]').forEach(r=> r.closest('label').style.display='none');
+    // banner de confirmare
+    let cb=$('#sl-confirm'); if(!cb){ cb=document.createElement('div'); cb.id='sl-confirm'; (paneC.parentNode).appendChild(cb); }
+    cb.innerHTML = `<div style="border:1px solid #f8717155;background:#f871710d;border-radius:8px;padding:10px 12px">
+        <div style="font-weight:700;margin-bottom:6px">&#9888; Confirma stergerea</div>
+        ${plan.rez}
+        <div class="hint" style="margin:8px 0 0">Poti reveni imediat dupa cu butonul <b>&#8617; Reverse</b> din Gestiune structura.</div>
+      </div>`;
+    cb.style.display='';
+    bNext.style.display='none'; bBack.style.display=''; bOk.style.display='';
+  };
+  bBack.onclick=()=>{
+    const cb=$('#sl-confirm'); if(cb) cb.style.display='none';
+    m.querySelectorAll('input[name=delmode]').forEach(r=> r.closest('label').style.display='');
+    paneL.style.display = modul()==='leaf'?'':'none'; paneC.style.display = modul()==='capitol'?'':'none';
+    bBack.style.display='none'; bOk.style.display='none'; bNext.style.display='';
+  };
+  bOk.onclick=async ()=>{
+    bOk.disabled=true;
+    try{
+      let r;
+      if(plan.mod==='capitol'){ r = await rpc('edit_colapseaza_capitol', { _capitol:capId }); }
+      else { r = await rpc('edit_sterge_leafuri', { _leafuri:[n.nod_id], _assignari:plan._assignari }); }
+      toast(r); closeModal(); await structRefreshArbore();
+      showDetail(capId || n.nod_id);
+    }catch(err){ toast(err.message, true); bOk.disabled=false; }
+  };
+}
+function injecteazaGestiune(n){
+  if(document.getElementById('struct-box')) return;
+  const pane=document.getElementById('detail-pane'); if(!pane) return;
+  const box=document.createElement('div'); box.className='section'; box.id='struct-box';
+  let btns='';
+  if(n.tip==='leaf'){
+    btns = `<button class="btn danger" id="st-del-leaf">&#128465; Sterge acest leaf</button>`;
+  } else {
+    btns = `<button class="btn primary" id="st-add-leaf">+ Adauga leaf nou</button>`
+      + ` <button class="btn" id="st-colaps" title="Sterge toate leafurile-copil; P-urile urca pe capitol care devine leaf">&#8600; Colapseaza capitolul in leaf</button>`;
+  }
+  box.innerHTML = `<h3>&#128295; Gestiune structura</h3><div class="editbar" style="margin:0">${btns}`
+    + ` <button class="btn" id="st-reverse" title="Anuleaza ultima modificare de structura (pana la 3 pasi inapoi)">&#8617; Reverse <span id="st-undo-n" style="opacity:.7"></span></button></div>`;
+  const sub=document.querySelector('#detail-pane .d-sub');
+  if(sub) sub.after(box); else pane.prepend(box);
+  const bAdd=document.getElementById('st-add-leaf'); if(bAdd) bAdd.onclick=()=>structAdaugaLeaf(n.nod_id);
+  const bDel=document.getElementById('st-del-leaf'); if(bDel) bDel.onclick=()=>modalStergeLeaf(n);
+  const bRev=document.getElementById('st-reverse'); if(bRev) bRev.onclick=structReverse;
+  undoLista().then(lst=>{ const s=document.getElementById('st-undo-n'); if(!s) return;
+    if(lst.length){ s.textContent='('+lst.length+')'; if(bRev) bRev.title='Anuleaza: "'+(lst[0].descriere||'ultima')+'" - '+lst.length+' disponibile'; }
+    else if(bRev){ bRev.disabled=true; bRev.style.opacity='.45'; bRev.title='Nimic de anulat'; }
+  });
+  const bCol=document.getElementById('st-colaps'); if(bCol) bCol.onclick=async ()=>{
+    // colapsul merge doar daca toti copiii sunt leaf
+    try{ const copii = await q(`/viz_noduri?parinte_id=eq.${encodeURIComponent(n.nod_id)}&select=tip`);
+      if(!copii.length){ toast('Capitolul nu are copii.', true); return; }
+      if(copii.some(c=>c.tip!=='leaf')){ toast('Colapsul merge doar pe capitole care au DOAR leafuri directe.', true); return; }
+      structColapsaza(n.nod_id, n.denumire);
+    }catch(e){ toast(e.message, true); }
+  };
+}
+
+// ---- Panoul de detalii: gestiune structura (edit mode) + insigna evidenta AI ----
+const _showDetailOrig = (typeof showDetail==='function') ? showDetail : null;
+if(_showDetailOrig) showDetail = async function(id){
+  await _showDetailOrig(id);
+  // 1) butoane de gestiune structura, doar in modul Editare
+  try{
+    if(typeof EDIT!=='undefined' && EDIT){
+      let n = nodeCache[id];
+      if(!n || n.tip===undefined || n.parinte_id===undefined){
+        n = (await q(`/viz_noduri?nod_id=eq.${encodeURIComponent(id)}&select=nod_id,parinte_id,tip,denumire`))[0];
+      }
+      if(n) injecteazaGestiune(n);
+    }
+  }catch(e){}
+  // 2) insigna de evidenta AI
+  try{
+    const rows = await q(`/viz_ai_prompturi?nod_id=eq.${encodeURIComponent(id)}&select=tip,status,model,eroare,actualizat_la`);
+    if(!rows.length) return;
+    const numeTip = t => (AI_TIPURI.find(x=>x.id===t)||{}).nume || t;
+    const box=document.createElement('div'); box.className='section'; box.id='ai-badge';
+    box.innerHTML='<h3>&#10024; Evidenta AI</h3>' + rows.map(r=>{ const d=(r.actualizat_la||'').slice(0,16).replace('T',' ');
+      return r.status==='ok'
+        ? `<div class="kv" style="color:var(--green)">&#10004; ${esc(numeTip(r.tip))}: OFICIALIZAT (${esc(r.model||'')}, ${d})</div>`
+        : `<div class="kv" style="color:#f87171">&#10008; ${esc(numeTip(r.tip))}: eroare la ${d} - ${esc((r.eroare||'').slice(0,140))} (se reia din matrice sau cu "doar erorile")</div>`;
+    }).join('');
+    const sub=document.querySelector('#detail-pane .d-sub'), pane=document.getElementById('detail-pane');
+    const anchor=document.getElementById('struct-box')||sub;
+    if(anchor) anchor.after(box); else if(pane) pane.prepend(box);
+  }catch(e){}
+};
+</script>
+
+
+
 </body>
 </html>
