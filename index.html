@@ -130,6 +130,9 @@
   #nom-pane{flex:1; overflow-y:auto; display:none; padding:0 0 60px;}
   .nomtool{display:flex; gap:12px; align-items:center; padding:10px 14px 8px; flex-wrap:wrap;}
   .nomtool .sr-count{padding:0;}
+  .nompag{display:flex; gap:8px; align-items:center; padding:6px 14px; flex-wrap:wrap; border-bottom:1px solid var(--border); background:var(--panel);}
+  .nompag .pg-info{font-size:11.5px; color:var(--muted); white-space:nowrap;}
+  .nompag button[disabled]{opacity:.35; cursor:default;}
   .nomtool select{padding:6px 9px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:12px; outline:none; cursor:pointer;}
   .ntab{width:100%; border-collapse:collapse; font-size:12.5px;}
   .ntab th{position:sticky; top:0; background:var(--panel); text-align:left; padding:8px 12px; color:var(--accent); font-size:10.5px; text-transform:uppercase; letter-spacing:.8px; border-bottom:1px solid var(--border); z-index:2;}
@@ -194,6 +197,73 @@ async function q(path){
   const r = await fetch(SB_URL + path, { headers: HDRS });
   if(!r.ok) throw new Error(await r.text());
   return r.json();
+}
+// Aduce TOT setul care corespunde filtrului, paginand prin CURSOR pe cheia primara.
+// Nu se foloseste offset: pe vederile cu agregate offset-ul mare depaseste timeout-ul
+// serverului (masurat: peste ~1600 randuri raspunde 500), pe cand cursorul ramane constant.
+async function qTot(bazaPath, cheie, onProgres){
+  // Pasul e adaptiv: unele vederi cu agregate (viz_prm_nomenclator) depasesc timeout-ul
+  // peste ~300 randuri pe cerere, altele duc 1000. Pornim mare si injumatatim la eroare.
+  let pas = 500, ultim = '', tot = [], esecuri = 0;
+  for(;;){
+    const sep = bazaPath.includes('?') ? '&' : '?';
+    const url = `${bazaPath}${sep}order=${cheie}&limit=${pas}` + (ultim ? `&${cheie}=gt.${encodeURIComponent(ultim)}` : '');
+    let d = null;
+    try{
+      const r = await fetch(SB_URL + url, { headers: HDRS });
+      if(!r.ok) throw new Error(await r.text());
+      d = await r.json();
+    }catch(err){
+      if(pas > 50){ pas = Math.floor(pas/2); continue; }     // serverul a cedat: cerem mai putin
+      if(++esecuri <= 2){ await new Promise(r=>setTimeout(r, 800)); continue; }
+      throw err;
+    }
+    esecuri = 0;
+    tot = tot.concat(d);
+    if(onProgres) onProgres(tot.length);
+    if(d.length < pas) break;
+    ultim = d[d.length-1][cheie];
+    if(tot.length > 100000) break;
+  }
+  return tot;
+}
+// Cache pentru setul complet, pe combinatia (nomenclator + sortare + cautare).
+// Setul se aduce o singura data prin cursor; sortarea si paginarea sunt apoi locale si instantanee.
+// In cache se pune PROMISIUNEA, nu rezultatul: doua randari pornite in acelasi timp pe
+// aceeasi cheie (ex. schimb de sortare urmat imediat de cautare) impart o singura descarcare.
+let NOMCACHE = {};
+let NOMREQ = 0;                       // generatia randarii curente; opreste randarile intarziate
+function nomCacheReset(){ NOMCACHE = {}; }
+function nomIncarca(cheieCache, cale, cheieCursor, sortare){
+  if(!NOMCACHE[cheieCache]){
+    NOMCACHE[cheieCache] = (async ()=>{
+      const gen = NOMREQ;
+      const d = await qTot(cale, cheieCursor, n=>{
+        // progresul se scrie doar daca randarea care l-a cerut e inca cea actuala
+        const pane = document.getElementById('nom-pane');
+        if(pane && gen === NOMREQ) pane.innerHTML = `<div class="loading" style="padding:16px">se incarca... ${n} randuri</div>`;
+      });
+      const [camp, dir] = sortare.split('.');
+      d.sort((a,b)=>{
+        const x=a[camp], y=b[camp];
+        const c = (typeof x === 'number' && typeof y === 'number')
+          ? x-y : String(x??'').localeCompare(String(y??''), 'ro');
+        return dir==='desc' ? -c : c;
+      });
+      return d;
+    })().catch(err=>{ delete NOMCACHE[cheieCache]; throw err; });   // esecul nu se memoreaza
+  }
+  return NOMCACHE[cheieCache];
+}
+// Salveaza un set de randuri ca fisier JSON.
+function salveazaJSON(date, numeFisier){
+  const blob = new Blob([JSON.stringify(date, null, 1)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = numeFisier;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  toast(`Descarcat: ${date.length} randuri in ${numeFisier}`);
 }
 let PIN = localStorage.getItem('quadra_pin') || '';
 function cerePin(){
@@ -695,6 +765,9 @@ function modalEditeazaTexte(n){
 const nomPane = document.getElementById('nom-pane');
 const treePane = document.getElementById('tree-pane');
 let NOMSORT = { p:'p_id', prm:'prm_id' };
+const NOMPAG = 200;                       // randuri pe pagina
+let NOMPAGE = { p:0, prm:0 };             // pagina curenta (0-based), per nomenclator
+function nomKey(){ return MODE==='p' ? 'p' : 'prm'; }
 function setMode(m){
   MODE = m;
   document.querySelectorAll('.mode-btn').forEach(b=> b.classList.toggle('active', b.dataset.m===m));
@@ -708,11 +781,11 @@ function setMode(m){
     : (m==='p' ? 'Cauta P dupa denumire, sinonim sau PU-...'
     : (m==='goluri' ? 'Cauta in goluri: denumire, cod, nota...' : 'Cauta parametru dupa denumire, valoare sau PRM-...'));
   if(t){ searchResults.style.display='none'; treeRoot.style.display='block'; nomPane.innerHTML=''; }
-  else { EXPANDED=null; renderNomTable(''); }
+  else { EXPANDED=null; NOMPAGE={p:0,prm:0}; renderNomTable(''); }
 }
 document.querySelectorAll('.mode-btn').forEach(b=> b.onclick = ()=> setMode(b.dataset.m));
 function curSearch(){ return document.getElementById('search').value.trim(); }
-function refreshNom(id){ PENDING_EXPAND = id; renderNomTable(curSearch()); }
+function refreshNom(id){ PENDING_EXPAND = id; nomCacheReset(); renderNomTable(curSearch()); }
 function gotoNom(mode, id){
   MODE = mode;
   document.querySelectorAll('.mode-btn').forEach(b=> b.classList.toggle('active', b.dataset.m===mode));
@@ -827,14 +900,19 @@ async function renderGoluri(v){
 
 async function renderNomTable(v){
   if(MODE==='goluri') return renderGoluri(v);
+  const gen = ++NOMREQ;               // orice randare pornita dupa asta o invalideaza pe cea curenta
   nomPane.innerHTML = '<div class="loading" style="padding:16px">se incarca...</div>';
   try{
     const e = encodeURIComponent('%'+v+'%');
-    let rows, head, body, tool;
+    let rows, head, body, tool, total = 0, cale = '', toate = [];
+    const pg = NOMPAGE[nomKey()] || 0, de = pg*NOMPAG;
     if(MODE==='p'){
       const flt = v ? `&or=(denumire.ilike.${e},sinonime.ilike.${e},p_id.ilike.${e})` : '';
-      rows = await q(`/viz_p_nomenclator?select=p_id,denumire,um,nr_leafuri,sinonime&order=${NOMSORT.p}${flt}&limit=400`);
-      tool = `<span class="sr-count">${rows.length} P-uri${rows.length===400?' (primele 400 — cauta ca sa restrangi)':''}</span>
+      cale = `/viz_p_nomenclator?select=p_id,denumire,um,nr_leafuri,sinonime${flt}`;
+      toate = await nomIncarca('p|'+NOMSORT.p+'|'+v, cale, 'p_id', NOMSORT.p);
+      if(gen !== NOMREQ) return;      // intre timp a pornit alta randare — nu suprascrie ce e pe ecran
+      total = toate.length; rows = toate.slice(de, de+NOMPAG);
+      tool = `<span class="sr-count">${total} P-uri${v?' care contin "'+esc(v)+'"':''}</span>
         <select id="nom-sort"><option value="p_id"${NOMSORT.p==='p_id'?' selected':''}>sortare: cod</option><option value="denumire"${NOMSORT.p==='denumire'?' selected':''}>sortare: denumire</option><option value="nr_leafuri.desc"${NOMSORT.p==='nr_leafuri.desc'?' selected':''}>sortare: cele mai folosite</option></select>
         <span class="hint" style="margin:0">click pe un rand = detalii si actiuni</span>
         ${EDIT?'<button class="btn mini danger" id="nom-del-p" disabled>sterge selectate</button>':''}
@@ -848,8 +926,11 @@ async function renderNomTable(v){
         <td><span class="nom-cnt">${r.nr_leafuri} leafuri</span></td></tr>`).join('');
     } else {
       const flt = v ? `&or=(denumire.ilike.${e},prm_id.ilike.${e},valori_lista.ilike.${e})` : '';
-      rows = await q(`/viz_prm_nomenclator?select=prm_id,denumire,tip,um,valori_lista,nr_utilizari&order=${NOMSORT.prm}${flt}&limit=400`);
-      tool = `<span class="sr-count">${rows.length} parametri${rows.length===400?' (primii 400 — cauta ca sa restrangi)':''}</span>
+      cale = `/viz_prm_nomenclator?select=prm_id,denumire,tip,um,valori_lista,nr_utilizari${flt}`;
+      toate = await nomIncarca('prm|'+NOMSORT.prm+'|'+v, cale, 'prm_id', NOMSORT.prm);
+      if(gen !== NOMREQ) return;      // idem: randarea asta a fost depasita
+      total = toate.length; rows = toate.slice(de, de+NOMPAG);
+      tool = `<span class="sr-count">${total} parametri${v?' care contin "'+esc(v)+'"':''}</span>
         <select id="nom-sort"><option value="prm_id"${NOMSORT.prm==='prm_id'?' selected':''}>sortare: cod</option><option value="denumire"${NOMSORT.prm==='denumire'?' selected':''}>sortare: denumire</option><option value="nr_utilizari.desc"${NOMSORT.prm==='nr_utilizari.desc'?' selected':''}>sortare: cei mai folositi</option></select>
         <span class="hint" style="margin:0">valorile se editeaza direct in tabel; click pe rand = P-urile care il folosesc</span>
         ${EDIT?'<button class="btn mini danger" id="nom-del-prm" disabled>sterge selectate</button>':''}
@@ -864,9 +945,31 @@ async function renderNomTable(v){
         <td class="vcell"><div class="vchips" data-prm="${esc(r.prm_id)}">${chipsHTML(r.valori_lista, EDIT)}</div>${EDIT?`<div class="vadd"><input placeholder="valoare noua (separate cu ' / ' CU SPATII)" data-prm="${esc(r.prm_id)}"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button><div class="valprev"></div></div>`:''}</td>
         <td><span class="nom-cnt">${r.nr_utilizari}x</span></td></tr>`).join('');
     }
-    nomPane.innerHTML = `<div class="nomtool">${tool}</div><table class="ntab"><thead>${head}</thead><tbody>${body}</tbody></table>` + (rows.length ? '' : '<div class="loading" style="padding:16px">nimic gasit</div>');
+    const nrPag = Math.max(1, Math.ceil(total/NOMPAG));
+    const eUltima = pg >= nrPag-1;
+    const pagHTML = `<div class="nompag">
+        <button class="btn mini" id="pg-first" ${pg<=0?'disabled':''}>&#171; prima</button>
+        <button class="btn mini" id="pg-prev" ${pg<=0?'disabled':''}>&#8249; inapoi</button>
+        <span class="pg-info">pagina <b>${pg+1}</b> din <b>${nrPag}</b>${total?` · randurile ${de+1}-${Math.min(de+NOMPAG,total)}`:''}</span>
+        <button class="btn mini" id="pg-next" ${eUltima?'disabled':''}>inainte &#8250;</button>
+        <button class="btn mini" id="pg-last" ${eUltima?'disabled':''}>ultima &#187;</button>
+        <span style="flex:1"></span>
+        <button class="btn mini" id="pg-json" title="Descarca TOATE randurile care corespund filtrului curent, nu doar pagina afisata">&#8681; descarca JSON</button>
+      </div>`;
+    nomPane.innerHTML = `<div class="nomtool">${tool}</div>${pagHTML}<table class="ntab"><thead>${head}</thead><tbody>${body}</tbody></table>`
+      + (rows.length ? pagHTML.replace(/id="pg-/g,'id="pgb-') : '<div class="loading" style="padding:16px">nimic gasit</div>');
+    const goPag = n => { NOMPAGE[nomKey()] = Math.max(0, Math.min(nrPag-1, n)); renderNomTable(curSearch()); };
+    ['','b'].forEach(sf=>{
+      const g = id => document.getElementById('pg'+sf+'-'+id);
+      if(g('first')) g('first').onclick = ()=> goPag(0);
+      if(g('prev'))  g('prev').onclick  = ()=> goPag(pg-1);
+      if(g('next'))  g('next').onclick  = ()=> goPag(pg+1);
+      if(g('last'))  g('last').onclick  = ()=> goPag(nrPag-1);
+      if(g('json'))  g('json').onclick  = () => salveazaJSON(toate,
+        (MODE==='p'?'quadra-p':'quadra-parametri') + (v?'-cautare':'') + '.json');
+    });
     const srt = document.getElementById('nom-sort');
-    srt.onchange = ()=>{ NOMSORT[MODE==='p'?'p':'prm'] = srt.value; renderNomTable(curSearch()); };
+    srt.onchange = ()=>{ NOMSORT[MODE==='p'?'p':'prm'] = srt.value; NOMPAGE[nomKey()]=0; renderNomTable(curSearch()); };
     const bnp = document.getElementById('nom-new-p'); if(bnp) bnp.onclick = modalCreeazaPDinNomenclator;
     const bnr = document.getElementById('nom-new-prm'); if(bnr) bnr.onclick = modalCreeazaPrmDictionar;
     if(EDIT && MODE==='p'){
@@ -883,7 +986,7 @@ async function renderNomTable(v){
         if(!def) return;
         try{
           toast(await rpc(def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri',{_p_uri:chosen.map(c=>c.id)}));
-          renderNomTable(curSearch());
+          nomCacheReset(); renderNomTable(curSearch());
         }catch(err){ toast(err.message, true); }
       };
     }
@@ -901,7 +1004,7 @@ async function renderNomTable(v){
         if(!def) return;
         try{
           toast(await rpc(def==='definitiv'?'edit_elimina_prm_uri':'edit_sterge_prm_uri',{_prm_uri:chosen.map(c=>c.id)}));
-          renderNomTable(curSearch());
+          nomCacheReset(); renderNomTable(curSearch());
         }catch(err){ toast(err.message, true); }
       };
     }
@@ -925,7 +1028,7 @@ async function renderNomTable(v){
       PENDING_EXPAND = null;
       if(tr){ toggleExp(tr); tr.scrollIntoView({block:'center'}); }
     }
-  }catch(err){ nomPane.innerHTML = '<div class="loading" style="padding:16px">eroare: '+esc(err.message)+'</div>'; }
+  }catch(err){ if(gen === NOMREQ) nomPane.innerHTML = '<div class="loading" style="padding:16px">eroare: '+esc(err.message)+'</div>'; }
 }
 
 async function valAdd(btn){
@@ -1046,7 +1149,7 @@ async function renderPExp(td, pId){
       if(!def) return;
       try{
         toast(await rpc(def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri',{_p_uri:[d.p_id]}));
-        document.getElementById('search').value=''; EXPANDED=null; renderNomTable('');
+        document.getElementById('search').value=''; EXPANDED=null; nomCacheReset(); renderNomTable('');
       }catch(err){ toast(err.message,true); }
     };
     td.querySelector('#xp-addprm').onclick = ()=>{
@@ -1267,7 +1370,7 @@ let searchTimer=null;
 searchBox.addEventListener('input', ()=>{
   clearTimeout(searchTimer);
   const v=searchBox.value.trim();
-  if(MODE!=='tree'){ searchTimer=setTimeout(()=>renderNomTable(v), 280); return; }
+  if(MODE!=='tree'){ NOMPAGE={p:0,prm:0}; searchTimer=setTimeout(()=>renderNomTable(v), 280); return; }
   if(v.length<3){ searchResults.style.display='none'; treeRoot.style.display='block'; return; }
   searchTimer=setTimeout(()=>doSearch(v), 300);
 });
