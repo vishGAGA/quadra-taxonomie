@@ -227,6 +227,11 @@ async function rpc(fn, args){
     let m=txt; try{ m=JSON.parse(txt).message||txt; }catch(e){}
     m = m.replace(/^.*?:\s*/,'');
     if(m.indexOf('PIN de editare invalid')>=0){ PIN=''; localStorage.removeItem('quadra_pin'); }
+    if(/Could not find the function|schema cache/i.test(m) && /edit_elimina_|edit_sterge_prm_uri/.test(fn)){
+      m = 'Stergerea definitiva nu e activata inca in baza de date. Trebuie rulata migrarea '+
+          'migrari/stergere_definitiva_p_prm.sql (functiile edit_elimina_p_uri / edit_elimina_prm_uri / edit_sterge_prm_uri). '+
+          'Pana atunci, foloseste optiunea "Retrage" pentru P-uri.';
+    }
     throw new Error(m);
   }
   try{ return JSON.parse(txt); }catch(e){ return txt; }
@@ -258,6 +263,42 @@ function showModal(title, bodyHTML, footHTML){
   overlay.classList.add('open');
   document.getElementById('m-close').onclick = closeModal;
   return overlay.querySelector('.modal');
+}
+// Dialog cu doua feluri de stergere: retragere (reversibila la nivel de date) vs eliminare definitiva.
+// Rezolva cu 'retras' | 'definitiv' | null (anulat).
+function cereModStergere(ce, n, lista){
+  return new Promise(resolve=>{
+    let raspuns = null;
+    const m = showModal(`Stergere ${esc(ce)} — ${n} ${n===1?'element':'elemente'}`, `
+      <div class="hint">Alege ce se intampla cu ${n===1?'elementul':'cele '+n+' elemente'}. Ambele variante il scot de pe toate
+      leafurile/perechile pe care apare. Diferenta e ce ramane in nomenclator.</div>
+      <pre style="max-height:190px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;font-size:11.5px;white-space:pre-wrap">${esc(lista)}</pre>
+      <label style="display:block;margin-top:10px;cursor:pointer">
+        <input type="radio" name="delmod" value="retras" checked>
+        <b>Retrage</b> — ramane in nomenclator cu status 'retras'. Istoricul si trimiterile catre el se pastreaza. Recomandat.
+      </label>
+      <label style="display:block;margin-top:8px;cursor:pointer">
+        <input type="radio" name="delmod" value="definitiv">
+        <b>Elimina definitiv</b> — dispare complet din nomenclator. Codul devine liber si nu mai poate fi recuperat.
+      </label>
+      <div class="hint" id="dm-warn" style="margin-top:8px"></div>`,
+      `<button class="btn" id="dm-no">renunta</button><button class="btn danger" id="dm-yes">confirma</button>`);
+    const warn = m.querySelector('#dm-warn');
+    const upd = ()=>{
+      const v = m.querySelector('input[name=delmod]:checked').value;
+      warn.innerHTML = v==='definitiv'
+        ? '<b style="color:var(--rosu,#f87171)">Atentie:</b> stergerea definitiva nu se poate anula, nici din pagina, nici prin undo.'
+        : 'Perechile care ar ramane sub 2 parametri blocheaza operatiunea (regula E3).';
+    };
+    m.querySelectorAll('input[name=delmod]').forEach(r=> r.addEventListener('change', upd));
+    upd();
+    m.querySelector('#dm-no').onclick = ()=>{ closeModal(); resolve(null); };
+    m.querySelector('#dm-yes').onclick = ()=>{
+      raspuns = m.querySelector('input[name=delmod]:checked').value;
+      if(raspuns==='definitiv' && !confirm(`Confirmi stergerea DEFINITIVA a ${n} ${ce}? Nu se poate anula.`)) return;
+      closeModal(); resolve(raspuns);
+    };
+  });
 }
 function wireSearch(inputEl, resultsEl, searchFn, rowHTML, onPick){
   let timer=null;
@@ -811,9 +852,11 @@ async function renderNomTable(v){
       tool = `<span class="sr-count">${rows.length} parametri${rows.length===400?' (primii 400 — cauta ca sa restrangi)':''}</span>
         <select id="nom-sort"><option value="prm_id"${NOMSORT.prm==='prm_id'?' selected':''}>sortare: cod</option><option value="denumire"${NOMSORT.prm==='denumire'?' selected':''}>sortare: denumire</option><option value="nr_utilizari.desc"${NOMSORT.prm==='nr_utilizari.desc'?' selected':''}>sortare: cei mai folositi</option></select>
         <span class="hint" style="margin:0">valorile se editeaza direct in tabel; click pe rand = P-urile care il folosesc</span>
+        ${EDIT?'<button class="btn mini danger" id="nom-del-prm" disabled>sterge selectate</button>':''}
         ${EDIT?'<button class="btn primary" id="nom-new-prm">+ creeaza parametru NOU</button>':''}`;
-      head = `<tr><th style="width:96px">Cod</th><th style="width:24%">Denumire</th><th style="width:78px">Tip lista</th><th style="width:50px">UM</th><th>Valori posibile</th><th style="width:76px">Folosit</th></tr>`;
+      head = `<tr>${EDIT?'<th style="width:26px"></th>':''}<th style="width:96px">Cod</th><th style="width:24%">Denumire</th><th style="width:78px">Tip lista</th><th style="width:50px">UM</th><th>Valori posibile</th><th style="width:76px">Folosit</th></tr>`;
       body = rows.map(r=>`<tr class="datarow" data-id="${esc(r.prm_id)}">
+        ${EDIT?`<td><input type="checkbox" class="prm-sel" data-id="${esc(r.prm_id)}" data-den="${esc(r.denumire)}" data-uz="${r.nr_utilizari}"></td>`:''}
         <td class="prm-id">${esc(r.prm_id)}</td>
         <td><b>${esc(r.denumire)}</b></td>
         <td class="prm-tip">${esc(r.tip==='lista deschisa'?'deschisa':'inchisa')}</td>
@@ -836,9 +879,28 @@ async function renderNomTable(v){
         const chosen = selCbs().map(cb=>({id:cb.dataset.id, den:cb.dataset.den}));
         if(!chosen.length) return;
         const lista = chosen.map(c=>c.id+' — '+c.den).join('\n');
-        if(!confirm(`Sterg ${chosen.length} P-uri din dictionar?\n\n${lista}\n\nSe scot de pe toate leafurile pe care sunt (impreuna cu parametrii perechilor respective) si trec pe status 'retras'. Nu e reversibil din pagina.`)) return;
+        const def = await cereModStergere('P', chosen.length, lista);
+        if(!def) return;
         try{
-          toast(await rpc('edit_sterge_p_uri',{_p_uri:chosen.map(c=>c.id)}));
+          toast(await rpc(def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri',{_p_uri:chosen.map(c=>c.id)}));
+          renderNomTable(curSearch());
+        }catch(err){ toast(err.message, true); }
+      };
+    }
+    if(EDIT && MODE==='prm'){
+      const delBtn = document.getElementById('nom-del-prm');
+      const selCbs = ()=> Array.from(nomPane.querySelectorAll('.prm-sel:checked'));
+      const updDel = ()=>{ const n = selCbs().length; if(delBtn){ delBtn.disabled = !n; delBtn.textContent = n?`sterge selectate (${n})`:'sterge selectate'; } };
+      nomPane.querySelectorAll('.prm-sel').forEach(cb=> cb.addEventListener('change', updDel));
+      updDel();
+      if(delBtn) delBtn.onclick = async ()=>{
+        const chosen = selCbs().map(cb=>({id:cb.dataset.id, den:cb.dataset.den, uz:+cb.dataset.uz}));
+        if(!chosen.length) return;
+        const lista = chosen.map(c=>`${c.id} — ${c.den}${c.uz?` (folosit pe ${c.uz} perechi)`:' (nefolosit)'}`).join('\n');
+        const def = await cereModStergere('parametru', chosen.length, lista);
+        if(!def) return;
+        try{
+          toast(await rpc(def==='definitiv'?'edit_elimina_prm_uri':'edit_sterge_prm_uri',{_prm_uri:chosen.map(c=>c.id)}));
           renderNomTable(curSearch());
         }catch(err){ toast(err.message, true); }
       };
@@ -980,9 +1042,10 @@ async function renderPExp(td, pId){
         try{ toast(await rpc('edit_p_seteaza_sinonime',{_p:d.p_id,_sinonime:v})); refreshNom(pId); }catch(err){ toast(err.message,true); }
       }, {textarea:true});
     td.querySelector('#xp-del').onclick = async ()=>{
-      if(!confirm(`Sterg ${d.p_id} (${d.denumire}) din dictionar?\n\nE pe ${d.nr_leafuri} leafuri (${d.nr_perechi} perechi) — se scoate de pe toate, impreuna cu parametrii perechilor respective, apoi P-ul trece pe status 'retras'. Nu e reversibil din pagina.`)) return;
+      const def = await cereModStergere('P', 1, `${d.p_id} — ${d.denumire}\n(e pe ${d.nr_leafuri} leafuri, ${d.nr_perechi} perechi)`);
+      if(!def) return;
       try{
-        toast(await rpc('edit_sterge_p_uri',{_p_uri:[d.p_id]}));
+        toast(await rpc(def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri',{_p_uri:[d.p_id]}));
         document.getElementById('search').value=''; EXPANDED=null; renderNomTable('');
       }catch(err){ toast(err.message,true); }
     };
