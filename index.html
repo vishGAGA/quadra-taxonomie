@@ -385,6 +385,35 @@ function showModal(title, bodyHTML, footHTML){
   document.getElementById('m-close').onclick = closeModal;
   return overlay.querySelector('.modal');
 }
+// A DOUA confirmare pentru operatiile de structura din arbore. Prima confirmare e formularul
+// (ce anume creezi / unde muti P-urile); asta e pasul final, care arata exact ce se intampla si
+// cere o actiune deliberata. La stergeri, butonul de confirmare se activeaza abia dupa ce
+// utilizatorul scrie cuvantul cerut — o apasare gresita nu mai poate distruge nimic.
+// Rezolva cu true (confirmat) sau false (renuntat).
+function confirmaDubla({titlu, rezumat, detalii, textOk, cuvant}){
+  return new Promise(resolve=>{
+    let raspuns=false;
+    const lista = (detalii||[]).length
+      ? `<ul style="margin:10px 0 0; padding-left:18px; font-size:12.5px; line-height:1.8">${detalii.map(d=>`<li>${d}</li>`).join('')}</ul>` : '';
+    const camp = cuvant
+      ? `<label class="lbl" style="margin-top:14px">Scrie <b>${esc(cuvant)}</b> ca sa confirmi</label>
+         <input id="cd-cuv" autocomplete="off" placeholder="${esc(cuvant)}">` : '';
+    const m = showModal(esc(titlu),
+      `<div class="hint" style="margin:0 0 10px">Pasul 2 din 2 — confirmare finala.</div>
+       <div style="padding:11px 13px;border:1px solid var(--border);border-radius:9px;background:var(--bg)">${rezumat}${lista}</div>${camp}`,
+      `<button class="btn" id="cd-x">Renunta</button><button class="btn danger" id="cd-ok"${cuvant?' disabled':''}>${esc(textOk||'Confirm')}</button>`);
+    const ok = m.querySelector('#cd-ok');
+    if(cuvant){
+      const inp = m.querySelector('#cd-cuv');
+      inp.addEventListener('input', ()=>{ ok.disabled = inp.value.trim().toUpperCase() !== cuvant.toUpperCase(); });
+      setTimeout(()=>inp.focus(), 60);
+    }
+    m.querySelector('#cd-x').onclick = ()=>{ closeModal(); };
+    ok.onclick = ()=>{ raspuns=true; closeModal(); };
+    const obs = new MutationObserver(()=>{ if(!overlay.classList.contains('open')){ obs.disconnect(); resolve(raspuns); } });
+    obs.observe(overlay, {attributes:true, attributeFilter:['class']});
+  });
+}
 // Dialog cu doua feluri de stergere: retragere (reversibila la nivel de date) vs eliminare definitiva.
 // Rezolva cu 'retras' | 'definitiv' | null (anulat).
 function cereModStergere(ce, n, lista){
@@ -663,7 +692,7 @@ async function renderPrms(list, leafId, pId){
     list.dataset.loaded='1';
     let inner = prms.length ? prms.map(m=>
       `<div class="prm-item"><span class="prm-name">${esc(m.denumire)}</span><span class="prm-id">${esc(m.prm_id)}</span><span class="prm-tip">${esc(m.tip||'')}</span>
-       <div class="vchips" style="margin-top:4px">${chipsHTML(m.valori_lista, false)}</div>
+       <div class="vchips" data-prm="${esc(m.prm_id)}" style="margin-top:4px">${chipsHTML(m.valori_lista, EDIT)}</div>
        ${EDIT?`<div class="prm-actions">
           <button class="btn mini" data-act="vals" data-prm="${esc(m.prm_id)}">+ valori</button>
           <button class="btn mini danger" data-act="del" data-prm="${esc(m.prm_id)}">&#10005; sterge parametrul</button>
@@ -675,6 +704,10 @@ async function renderPrms(list, leafId, pId){
         <button class="btn mini" data-act="gen-prm" title="propune parametrii folositi de acest P in alte contexte, cu verificare anti-dubluri">&#9881; genereaza parametri</button></div>`;
     list.innerHTML = inner;
     if(!EDIT) return;
+    // Valorile devin chip-uri editabile si in arbore: click = redenumeste, x = sterge valoarea.
+    // Pana acum se randau cu editable=false, deci o valoare gresita nu putea fi scoasa decat
+    // din nomenclatorul de parametri.
+    list.querySelectorAll('.vchips[data-prm]').forEach(box=> wireChips(box, box.dataset.prm));
     list.querySelectorAll('[data-act]').forEach(b=>{
       b.onclick = async (e)=>{
         e.stopPropagation();
@@ -1101,7 +1134,11 @@ async function valAdd(btn){
   try{
     const lista = await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:v});
     rerenderChips(btn.closest('td').querySelector('.vchips'), prm, lista);
-    inp.value=''; toast('Valori adaugate la '+prm+'.');
+    // Golirea prin `inp.value=''` NU declanseaza evenimentul 'input', deci previzualizarea
+    // ramanea pe ecran cu chip-urile tocmai salvate — arata ca si cum valorile s-ar fi
+    // adaugat de doua ori. Il declansam explicit ca sa se stearga si previzualizarea.
+    inp.value=''; inp.dispatchEvent(new Event('input'));
+    toast('Valori adaugate la '+prm+'.');
   }catch(err){ toast(err.message, true); }
 }
 function valSet(btn){
@@ -1762,7 +1799,15 @@ async function modalAdaugaNod(n){
     const d = den.value.trim(), c = cop.value.trim();
     if(d.length<2){ toast('Denumire prea scurta.', true); return; }
     if(tip==='capitol' && c.length<2){ toast('Capitolul are nevoie si de primul leaf din el.', true); return; }
-    ev.target.disabled=true;
+    closeModal();
+    const det = [`sub <span class="node-id">${esc(n.nod_id)}</span> &laquo;${esc(n.denumire)}&raquo;`];
+    if(tip==='capitol') det.push(`capitolul primeste imediat leaf-ul &laquo;${esc(c)}&raquo;`);
+    if(n.tip==='leaf') det.push('<b>nodul parinte devine capitol</b> si nu mai e pozitie de deviz');
+    if(!await confirmaDubla({
+      titlu:'Confirmi crearea?',
+      rezumat:`Se creeaza ${tip==='capitol'?'un <b>capitol</b>':'un <b>leaf</b>'} numit &laquo;<b>${esc(d)}</b>&raquo;.`,
+      detalii:det, textOk:'Da, creeaza'})) return;
+    ev = {target:{disabled:false}};   // modalul de creare s-a inchis; nu mai exista butonul original
     try{
       const idn = await rpc('edit_creeaza_leaf', { _parinte:n.nod_id, _denumire:d });
       let mesaj = 'Creat: '+idn;
@@ -1795,9 +1840,13 @@ async function structStergeNod(n){
       + (doarLeaf ? ' sau foloseste "Colapseaza capitolul in leaf".' : ' (are si subcapitole).'), true);
     return;
   }
-  if(!confirm(`Sterg capitolul gol "${n.denumire}" (${n.nod_id})?\n\n`
-    + `Nodul nu mai are copii, dar a ramas marcat drept capitol, asa ca nu poate fi sters direct.\n`
-    + `Il transform intai in leaf (copil temporar + colapsare) si abia apoi il sterg.`)) return;
+  if(!await confirmaDubla({
+    titlu:'Confirmi stergerea capitolului gol?',
+    rezumat:`Se sterge <span class="node-id">${esc(n.nod_id)}</span> &laquo;<b>${esc(n.denumire)}</b>&raquo;.`,
+    detalii:['nodul nu mai are copii, dar e inca marcat drept capitol, deci nu se poate sterge direct',
+             'il transform intai in leaf (copil temporar + colapsare) si abia apoi il sterg',
+             'se poate reveni imediat cu <b>&#8617; Reverse</b>'],
+    textOk:'Da, sterge capitolul', cuvant:'STERG'})) return;
   try{
     await rpc('edit_creeaza_leaf', { _parinte:n.nod_id, _denumire:'temporar pentru stergere' });
     await rpc('edit_colapseaza_capitol', { _capitol:n.nod_id });
@@ -1971,6 +2020,23 @@ async function modalStergeLeaf(n){
   };
   bOk.onclick=async ()=>{
     bOk.disabled=true;
+    // A doua confirmare, cu tastarea cuvantului: stergerea nu poate porni dintr-un click gresit.
+    const esteCapitol = plan.mod==='capitol';
+    const ok = await confirmaDubla({
+      titlu: esteCapitol ? 'Confirmi colapsarea capitolului?' : 'Confirmi stergerea leaf-ului?',
+      rezumat: esteCapitol
+        ? `Se sterg <b>${totLeafuri.length} leafuri</b> din &laquo;${esc(capDen)}&raquo;, care devine el insusi leaf.`
+        : `Se sterge leaf-ul <span class="node-id">${esc(n.nod_id)}</span> &laquo;<b>${esc(n.denumire)}</b>&raquo;.`,
+      detalii: esteCapitol
+        ? ['toate articolele copiilor urca pe capitol', 'niciun P nu se pierde din dictionar']
+        : [`are ${puri.length} ${puri.length===1?'articol':'articole'} pe el`,
+           'articolele nebifate raman doar in dictionar, fara leaf',
+           'se poate reveni imediat cu <b>&#8617; Reverse</b>'],
+      textOk: esteCapitol ? 'Da, colapseaza' : 'Da, sterge leaf-ul',
+      cuvant: 'STERG'});
+    // confirmaDubla inlocuieste continutul overlay-ului, deci modalul de mai devreme nu mai
+    // exista; la renuntare nu avem la ce reveni, doar anuntam ca nu s-a atins nimic.
+    if(!ok){ toast('Anulat - nu s-a sters nimic.'); return; }
     try{
       let r;
       if(plan.mod==='capitol'){ r = await rpc('edit_colapseaza_capitol', { _capitol:capId }); }
