@@ -201,10 +201,27 @@ async function q(path){
 // Aduce TOT setul care corespunde filtrului, paginand prin CURSOR pe cheia primara.
 // Nu se foloseste offset: pe vederile cu agregate offset-ul mare depaseste timeout-ul
 // serverului (masurat: peste ~1600 randuri raspunde 500), pe cand cursorul ramane constant.
+// Pasul de pornire, pe vedere. NU e o optimizare, e o REGULA: coloanele de numarare
+// (nr_utilizari, nr_leafuri, parametri) sunt subinterogari evaluate PE FIECARE RAND, iar
+// serverul taie cererea la statement timeout peste un anumit numar de randuri. Masurat:
+// viz_prm_nomenclator cedeaza peste 200, viz_p_param peste 500. Daca pornim mai sus,
+// fiecare deschidere de tab lasa cate un HTTP 500 in logurile Supabase inainte sa scadem
+// pasul. Pornim direct sub prag, ca sa nu generam erori deloc.
+const PAS_INITIAL = [
+  [/viz_prm_nomenclator/, 200],
+  [/viz_p_param/,         400],
+  [/viz_p_nomenclator/,   500],
+];
+function pasPentru(cale){
+  const r = PAS_INITIAL.find(([re]) => re.test(cale));
+  return r ? r[1] : 500;
+}
+// ATENTIE: paginarea e pe CURSOR (`cheie=gt.ultima_valoare`), deci `cheie` TREBUIE sa fie
+// unica pe rand. Pe o coloana ne-unica se pierd tacit randurile care au aceeasi valoare cu
+// ultimul rand al paginii — nu da eroare, doar lipsesc date. Aici se folosesc doar p_id si
+// prm_id, care sunt unice.
 async function qTot(bazaPath, cheie, onProgres){
-  // Pasul e adaptiv: unele vederi cu agregate (viz_prm_nomenclator) depasesc timeout-ul
-  // peste ~300 randuri pe cerere, altele duc 1000. Pornim mare si injumatatim la eroare.
-  let pas = 500, ultim = '', tot = [], esecuri = 0;
+  let pas = pasPentru(bazaPath), ultim = '', tot = [], esecuri = 0;
   for(;;){
     const sep = bazaPath.includes('?') ? '&' : '?';
     const url = `${bazaPath}${sep}order=${cheie}&limit=${pas}` + (ultim ? `&${cheie}=gt.${encodeURIComponent(ultim)}` : '');
