@@ -24,6 +24,13 @@
   .node-row{display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:6px; cursor:pointer; font-size:13px; line-height:1.5;}
   .node-row:hover{background:var(--panel2);}
   .node-row.selected{background:#0c4a6e;}
+  /* actiunile de structura de pe randul din arbore: apar la hover, ca sa nu incarce vizual arborele */
+  .row-act{margin-left:auto; display:flex; gap:3px; opacity:0; transition:opacity .12s; flex-shrink:0;}
+  .node-row:hover .row-act, .node-row.selected .row-act{opacity:1;}
+  .ra{border:1px solid var(--border); background:var(--panel); color:var(--muted); border-radius:5px;
+      width:22px; height:20px; line-height:1; font-size:12px; cursor:pointer; padding:0;}
+  .ra:hover{background:var(--panel2); color:var(--text); border-color:var(--accent);}
+  .ra-del:hover{color:#f87171; border-color:#f87171;}
   .caret{width:16px; text-align:center; color:var(--muted); font-size:10px; flex-shrink:0; transition:transform .15s;}
   .caret.open{transform:rotate(90deg);}
   .caret.empty{visibility:hidden;}
@@ -334,8 +341,35 @@ editToggle.addEventListener('change', ()=>{
   if(EDIT && !PIN) cerePin(); // optional aici; oricum se cere automat la prima scriere
   document.getElementById('edit-switch').classList.toggle('on', EDIT);
   if(MODE!=='tree'){ PENDING_EXPAND = EXPANDED; renderNomTable(document.getElementById('search').value.trim()); }
-  else if(currentId) showDetail(currentId);
+  else{
+    // butoanele de structura sunt randate in makeNode() dupa EDIT, deci arborele deja
+    // desenat trebuie redesenat, altfel apar abia la urmatoarea expandare
+    redeseneazaArbore();
+    if(currentId) showDetail(currentId);
+  }
 });
+// Redeseneaza arborele pastrand ce era expandat si nodul selectat.
+async function redeseneazaArbore(){
+  const root=document.getElementById('tree-root'); if(!root) return;
+  const deschise=[...root.querySelectorAll('.node')]
+    .filter(w=>w.querySelector(':scope > .children.open')).map(w=>w.dataset.id)
+    .sort((a,b)=>a.length-b.length);          // parintii inaintea copiilor, altfel nu exista inca in DOM
+  const sel=currentId;
+  root.innerHTML='';
+  const roots = await q('/viz_noduri?parinte_id=is.null&select=nod_id,parinte_id,tip,denumire&limit=50');
+  roots.sort(natCmp); roots.forEach(n=>root.appendChild(makeNode(n)));
+  for(const id of deschise){
+    const w=root.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if(!w) continue;
+    const kids=w.querySelector(':scope > .children'), caret=w.querySelector(':scope > .node-row .caret');
+    if(!kids) continue;
+    kids.classList.add('open'); if(caret) caret.classList.add('open');
+    if(!kids.dataset.loaded) await loadChildren(id, kids);
+  }
+  if(sel){
+    const r=root.querySelector(`.node[data-id="${CSS.escape(sel)}"] > .node-row`);
+    if(r){ r.classList.add('selected'); selectedRow=r; }
+  }
+}
 function toast(msg, isErr){
   const t=document.createElement('div'); t.className='toast-item'+(isErr?' err':''); t.textContent=msg;
   document.getElementById('toast').appendChild(t);
@@ -482,9 +516,20 @@ function makeNode(n){
   row.innerHTML = `<span class="caret ${isLeaf?'empty':''}">&#9654;</span>
     <span class="node-id">${esc(n.nod_id)}</span>
     ${badge(n.tip)}
-    <span class="node-name">${esc(n.denumire)}</span>`;
+    <span class="node-name">${esc(n.denumire)}</span>`
+    + (EDIT ? `<span class="row-act">
+        <button class="ra ra-add" title="Adauga sub acest nod: leaf sau capitol">+</button>
+        <button class="ra ra-del" title="Sterge acest nod">&#128465;</button>
+      </span>` : '');
   const kids = document.createElement('div'); kids.className='children';
   wrap.appendChild(row); wrap.appendChild(kids);
+
+  if(EDIT){
+    // butoanele de structura nu trebuie sa selecteze/expandeze randul
+    const bA = row.querySelector('.ra-add'), bD = row.querySelector('.ra-del');
+    if(bA) bA.onclick = e => { e.stopPropagation(); modalAdaugaNod(n); };
+    if(bD) bD.onclick = e => { e.stopPropagation(); structStergeNod(n); };
+  }
 
   row.addEventListener('click', async (e)=>{
     selectNode(row, n.nod_id);
@@ -1666,15 +1711,104 @@ async function structRefreshArbore(){
   // reincarca lazy copiii in arbore (daca nodul e expandat) - altfel se reincarca la re-expandare
   try{ document.querySelectorAll('#tree-root .children.open').forEach(k=>{ k.dataset.loaded=''; }); }catch(e){}
 }
-async function structAdaugaLeaf(nodId){
-  const den = (prompt('Denumirea noului leaf (sub acest capitol):')||'').trim();
-  if(den.length<2){ if(den) toast('Denumire prea scurta.', true); return; }
-  try{ const idn = await rpc('edit_creeaza_leaf', { _parinte:nodId, _denumire:den });
-    toast('Leaf nou creat: '+idn); await structRefreshArbore();
-    delete nodeCache[nodId]; // parintele poate fi promovat leaf->familie de RPC — evita randare stale la reintoarcere
-    if(MODE!=='tree') setMode('tree'); showDetail(idn);
-  }catch(err){ toast(err.message, true); }
+// Reincarca in loc subarborele unui nod, ca sa se vada imediat ce s-a creat/sters,
+// fara sa pierzi pozitia din arbore.
+async function structReincarcaSub(nodId){
+  const wrap = document.querySelector(`#tree-root .node[data-id="${CSS.escape(nodId)}"]`);
+  if(!wrap) return structRefreshArbore();
+  const kids = wrap.querySelector(':scope > .children'); if(!kids) return;
+  const caret = wrap.querySelector(':scope > .node-row .caret');
+  if(caret){ caret.classList.remove('empty'); caret.classList.add('open'); }
+  kids.classList.add('open'); kids.dataset.loaded='';
+  kids.innerHTML = '<div class="loading">se incarca...</div>';
+  await loadChildren(nodId, kids);
 }
+
+// Adauga sub nodul curent. In arbore nu exista "tip" ales de om: un nod e leaf cat timp
+// nu are copii si devine capitol in clipa in care primeste primul copil. De aceea varianta
+// "capitol" cere de la inceput si numele primului leaf din el — altfel ar ramane un capitol
+// gol, care nu se mai poate nici sterge (nu e leaf), nici colapsa (n-are copii).
+async function modalAdaugaNod(n){
+  const o = showModal(`Adauga sub &laquo;${esc(n.denumire)}&raquo;`, `
+      <div class="hint" style="margin-bottom:10px"><span class="node-id">${esc(n.nod_id)}</span> &middot; ${esc(n.tip)}</div>
+      <label class="lbl">Ce adaugi</label>
+      <div class="editbar" style="margin:0 0 12px">
+        <label style="display:flex;gap:7px;align-items:flex-start;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:8px;flex:1">
+          <input type="radio" name="an-tip" value="leaf" checked style="margin-top:3px">
+          <span><b>Leaf</b><div class="hint" style="margin:2px 0 0">Pozitie de deviz. Primeste P-uri si parametri.</div></span>
+        </label>
+        <label style="display:flex;gap:7px;align-items:flex-start;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:8px;flex:1">
+          <input type="radio" name="an-tip" value="capitol" style="margin-top:3px">
+          <span><b>Capitol</b><div class="hint" style="margin:2px 0 0">Grupeaza alte noduri. Cere si primul leaf din el.</div></span>
+        </label>
+      </div>
+      <label class="lbl">Denumire</label>
+      <input id="an-den" placeholder="ex. Tencuiala de var" autocomplete="off">
+      <div id="an-copil-box" style="display:none;margin-top:12px">
+        <label class="lbl">Primul leaf din capitol</label>
+        <input id="an-copil" placeholder="ex. Var pasta aplicat manual" autocomplete="off">
+        <div class="hint">Un capitol fara copii ramane blocat: nu se poate sterge si nu se poate colapsa.</div>
+      </div>
+      ${n.tip==='leaf' ? '<div class="hint" style="margin-top:12px;color:var(--accent)">Atentie: acest nod e acum leaf. Daca primeste un copil devine capitol, iar P-urile lui raman pe el fara sa mai fie vizibile ca pozitie de deviz.</div>' : ''}
+    `, `<button class="btn" id="an-x">Renunta</button><button class="btn primary" id="an-ok">Creeaza</button>`);
+  const den=o.querySelector('#an-den'), cop=o.querySelector('#an-copil'), box=o.querySelector('#an-copil-box');
+  o.querySelectorAll('input[name="an-tip"]').forEach(r=> r.onchange=()=>{
+    box.style.display = o.querySelector('input[name="an-tip"]:checked').value==='capitol' ? '' : 'none';
+  });
+  den.focus();
+  o.querySelector('#an-x').onclick = closeModal;
+  o.querySelector('#an-ok').onclick = async (ev)=>{
+    const tip = o.querySelector('input[name="an-tip"]:checked').value;
+    const d = den.value.trim(), c = cop.value.trim();
+    if(d.length<2){ toast('Denumire prea scurta.', true); return; }
+    if(tip==='capitol' && c.length<2){ toast('Capitolul are nevoie si de primul leaf din el.', true); return; }
+    ev.target.disabled=true;
+    try{
+      const idn = await rpc('edit_creeaza_leaf', { _parinte:n.nod_id, _denumire:d });
+      let mesaj = 'Creat: '+idn;
+      if(tip==='capitol'){
+        const idc = await rpc('edit_creeaza_leaf', { _parinte:idn, _denumire:c });
+        mesaj = 'Capitol '+idn+' cu leaf-ul '+idc;
+      }
+      closeModal(); toast(mesaj);
+      delete nodeCache[n.nod_id];              // parintele poate fi promovat leaf -> capitol
+      await structReincarcaSub(n.nod_id);
+      showDetail(idn);
+    }catch(err){ toast(err.message, true); ev.target.disabled=false; }
+  };
+}
+
+// Sterge nodul, indiferent de tip. Cazurile sunt diferite si RPC-urile nu le acopera pe toate:
+//  - leaf                 -> modalul existent, care intreaba unde se muta P-urile
+//  - capitol cu copii     -> se refuza; nu exista stergere recursiva si nu o improvizam
+//  - capitol golit        -> ramane tip='familie' pentru totdeauna: nu se poate sterge (nu e leaf)
+//                            si nu se poate colapsa (n-are copii). Il deblocam punand un copil
+//                            temporar, colapsand (devine leaf) si stergandu-l apoi.
+async function structStergeNod(n){
+  if(n.tip==='leaf') return modalStergeLeaf(n);
+  let copii=[];
+  try{ copii = await q(`/viz_noduri?parinte_id=eq.${encodeURIComponent(n.nod_id)}&select=nod_id,tip`); }
+  catch(e){ toast(e.message, true); return; }
+  if(copii.length){
+    const doarLeaf = copii.every(c=>c.tip==='leaf');
+    toast(`"${n.denumire}" are ${copii.length} copii. Goleste-l intai`
+      + (doarLeaf ? ' sau foloseste "Colapseaza capitolul in leaf".' : ' (are si subcapitole).'), true);
+    return;
+  }
+  if(!confirm(`Sterg capitolul gol "${n.denumire}" (${n.nod_id})?\n\n`
+    + `Nodul nu mai are copii, dar a ramas marcat drept capitol, asa ca nu poate fi sters direct.\n`
+    + `Il transform intai in leaf (copil temporar + colapsare) si abia apoi il sterg.`)) return;
+  try{
+    await rpc('edit_creeaza_leaf', { _parinte:n.nod_id, _denumire:'temporar pentru stergere' });
+    await rpc('edit_colapseaza_capitol', { _capitol:n.nod_id });
+    const r = await rpc('edit_sterge_leafuri', { _leafuri:[n.nod_id] });
+    toast(r);
+    delete nodeCache[n.nod_id];
+    if(n.parinte_id){ delete nodeCache[n.parinte_id]; await structReincarcaSub(n.parinte_id); showDetail(n.parinte_id); }
+    else await structRefreshArbore();
+  }catch(err){ toast('Nu am putut sterge: '+err.message, true); }
+}
+
 async function structColapsaza(nodId, denum){
   if(!confirm(`Colapsez capitolul "${denum}" intr-un singur leaf?\nTOATE leafurile-copil se sterg, iar P-urile lor urca pe acest capitol (care devine leaf). Ireversibil.`)) return;
   try{ const r = await rpc('edit_colapseaza_capitol', { _capitol:nodId });
@@ -1853,17 +1987,20 @@ function injecteazaGestiune(n){
   const box=document.createElement('div'); box.className='section'; box.id='struct-box';
   let btns='';
   if(n.tip==='leaf'){
-    btns = `<button class="btn danger" id="st-del-leaf">&#128465; Sterge acest leaf</button>`;
+    btns = `<button class="btn primary" id="st-add-leaf">+ Adauga sub acest nod</button>`
+      + ` <button class="btn danger" id="st-del-leaf">&#128465; Sterge acest leaf</button>`;
   } else {
-    btns = `<button class="btn primary" id="st-add-leaf">+ Adauga leaf nou</button>`
+    btns = `<button class="btn primary" id="st-add-leaf">+ Adauga leaf sau capitol</button>`
+      + ` <button class="btn danger" id="st-del-nod">&#128465; Sterge acest capitol</button>`
       + ` <button class="btn" id="st-colaps" title="Sterge toate leafurile-copil; P-urile urca pe capitol care devine leaf">&#8600; Colapseaza capitolul in leaf</button>`;
   }
   box.innerHTML = `<h3>&#128295; Gestiune structura</h3><div class="editbar" style="margin:0">${btns}`
     + ` <button class="btn" id="st-reverse" title="Anuleaza ultima modificare de structura (pana la 3 pasi inapoi)">&#8617; Reverse <span id="st-undo-n" style="opacity:.7"></span></button></div>`;
   const sub=document.querySelector('#detail-pane .d-sub');
   if(sub) sub.after(box); else pane.prepend(box);
-  const bAdd=document.getElementById('st-add-leaf'); if(bAdd) bAdd.onclick=()=>structAdaugaLeaf(n.nod_id);
+  const bAdd=document.getElementById('st-add-leaf'); if(bAdd) bAdd.onclick=()=>modalAdaugaNod(n);
   const bDel=document.getElementById('st-del-leaf'); if(bDel) bDel.onclick=()=>modalStergeLeaf(n);
+  const bDelN=document.getElementById('st-del-nod'); if(bDelN) bDelN.onclick=()=>structStergeNod(n);
   const bRev=document.getElementById('st-reverse'); if(bRev) bRev.onclick=structReverse;
   undoLista().then(lst=>{ const s=document.getElementById('st-undo-n'); if(!s) return;
     if(lst.length){ s.textContent='('+lst.length+')'; if(bRev) bRev.title='Anuleaza: "'+(lst[0].descriere||'ultima')+'" - '+lst.length+' disponibile'; }
