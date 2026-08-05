@@ -264,52 +264,102 @@ async function qTot(bazaPath, cheie, onProgres){
   }
   return tot;
 }
-// Cache pentru setul complet, pe combinatia (nomenclator + sortare + cautare).
-// Setul se aduce o singura data prin cursor; sortarea si paginarea sunt apoi locale si instantanee.
-// In cache se pune PROMISIUNEA, nu rezultatul: doua randari pornite in acelasi timp pe
-// aceeasi cheie (ex. schimb de sortare urmat imediat de cautare) impart o singura descarcare.
-let NOMCACHE = {};
 let NOMREQ = 0;                       // generatia randarii curente; opreste randarile intarziate
+let NOMCACHE = {};                    // (cale+sortare+cautare) -> {total, pagini:{n:randuri}}
 function nomCacheReset(){ NOMCACHE = {}; }
-function nomIncarca(cheieCache, cale, cheieCursor, sortare){
-  if(!NOMCACHE[cheieCache]){
-    NOMCACHE[cheieCache] = (async ()=>{
-      const gen = NOMREQ;
-      const d = await qTot(cale, cheieCursor, n=>{
-        // progresul se scrie doar daca randarea care l-a cerut e inca cea actuala
-        const pane = document.getElementById('nom-pane');
-        if(pane && gen === NOMREQ) pane.innerHTML = `<div class="loading" style="padding:16px">se incarca... ${n} randuri</div>`;
-      });
-      const [camp, dir] = sortare.split('.');
-      d.sort((a,b)=>{
-        const x=a[camp], y=b[camp];
-        const c = (typeof x === 'number' && typeof y === 'number')
-          ? x-y : String(x??'').localeCompare(String(y??''), 'ro');
-        return dir==='desc' ? -c : c;
-      });
-      return d;
-    })().catch(err=>{ delete NOMCACHE[cheieCache]; throw err; });   // esecul nu se memoreaza
+
+// ---- Paginare PE SERVER, 200 de randuri odata ----
+// Nomenclatoarele nu se mai descarca integral. Motivul nu e doar viteza: coloanele de
+// numarare (nr_leafuri / nr_utilizari) sunt subinterogari evaluate PE FIECARE RAND, iar
+// serverul taie cererea la 3 s. Masurat pe vederile de azi:
+//   limit=200 offset=0     -> OK (0,6 s P / 1,5 s PRM)
+//   limit=200 offset=1200  -> 500, statement timeout
+// Deci OFFSET-ul mare e otrava. Solutia, in doi pasi, amandoi ieftini:
+//   1. reperul paginii: acelasi order, dar cerand DOAR coloanele ieftine (planificatorul
+//      arunca atunci subinterogarea) -> primim cheia de la care incepe pagina;
+//   2. pagina insasi, ceruta prin cheie (`gte`), nu prin offset -> serverul taie randurile
+//      inainte sa evalueze numaratoarea.
+// Numaratoarea totala se cere separat, tot fara coloanele scumpe (~90 ms).
+// Sortarea dupa numarul de utilizari nu se poate servi asa: cheia de sortare E coloana
+// scumpa. Merge doar pe vederile rapide _v2 (migrarea vederi_rapide_nomenclator.sql).
+let VEDERI_V2 = null;
+async function areVederiV2(){
+  if(VEDERI_V2 === null){
+    try{ await q('/viz_p_nomenclator_v2?select=p_id&limit=1'); VEDERI_V2 = true; }
+    catch(e){ VEDERI_V2 = false; }
   }
-  return NOMCACHE[cheieCache];
+  return VEDERI_V2;
+}
+function citat(v){ return `"${String(v).replace(/"/g,'\\"')}"`; }
+// cfg: {vedere, cheie, select, filtru, sortare, pagina, pas}
+async function nomAduPagina(cfg){
+  const {vedere, cheie, select, filtru, sortare, pagina, pas} = cfg;
+  const de = pagina * pas;
+  const [camp, dir] = sortare.split('.');
+  const desc = dir === 'desc';
+
+  const total = await (async ()=>{
+    const r = await fetch(`${SB_URL}${vedere}?select=${cheie}${filtru}&limit=1`,
+      { headers: {...HDRS, Prefer:'count=exact'} });
+    if(!r.ok) throw new Error(await r.text());
+    const cr = r.headers.get('content-range') || '';
+    return parseInt(cr.split('/')[1], 10) || 0;
+  })();
+  if(!total) return {total:0, randuri:[]};
+
+  // sortarea dupa coloana de numarare: doar cu vederi rapide, altfel nu se poate pagina
+  if(camp !== cheie && camp !== 'denumire'){
+    if(!await areVederiV2()) { const e = new Error('SORTARE_INDISPONIBILA'); e.sortare = camp; throw e; }
+    const d = await q(`${vedere}_v2?select=${select}${filtru}&order=${sortare},${cheie}&limit=${pas}&offset=${de}`);
+    return {total, randuri:d};
+  }
+
+  const ordine = camp === cheie ? cheie + (desc?'.desc':'') : `${camp}${desc?'.desc':''},${cheie}`;
+  let filtruPagina = '';
+  if(de > 0){
+    // reperul: acelasi order, doar coloanele ieftine
+    const rep = await q(`${vedere}?select=${camp===cheie?cheie:camp+','+cheie}${filtru}&order=${ordine}&limit=1&offset=${de}`);
+    if(!rep.length) return {total, randuri:[]};
+    const r0 = rep[0], op = desc ? 'lt' : 'gt';
+    filtruPagina = camp === cheie
+      ? `&${cheie}=${op}e.${encodeURIComponent(r0[cheie])}`
+      : '&or=' + encodeURIComponent(`(${camp}.${op}.${citat(r0[camp])},and(${camp}.eq.${citat(r0[camp])},${cheie}.${op}e.${r0[cheie]}))`);
+  }
+  const d = await q(`${vedere}?select=${select}${filtru}&order=${ordine}&limit=${pas}${filtruPagina}`);
+  return {total, randuri:d};
+}
+// In cache se pune PROMISIUNEA, nu rezultatul: doua randari pornite in acelasi timp pe
+// aceeasi pagina (ex. schimb de sortare urmat imediat de cautare) impart o singura cerere.
+function nomIncarcaPagina(cheieCache, cfg){
+  const k = cheieCache + '|' + cfg.pagina;
+  if(!NOMCACHE[k]){
+    NOMCACHE[k] = nomAduPagina(cfg).catch(err=>{ delete NOMCACHE[k]; throw err; });
+  }
+  return NOMCACHE[k];
 }
 // Descrierile P-urilor stau intr-o vedere separata (viz_p_descriere), ca sa nu se atinga
 // vederile care merg azi. Sunt 2.112 randuri mici: se aduc o singura data si raman in memorie.
 // Daca migrarea `migrari/descriere_p.sql` nu e inca rulata in baza, vederea lipseste — nu e
 // o eroare de pagina, doar nu exista descrieri; se spune asta acolo unde ar fi fost afisate.
-let DESCP = null, DESCPMAP = {}, DESCP_LIPSA = false;
-function descPIncarca(){
-  if(!DESCP){
-    DESCP = (async ()=>{
-      try{
-        const d = await qTot('/viz_p_descriere?select=p_id,descriere', 'p_id');
-        const m = {}; d.forEach(r=>{ if(r.descriere) m[r.p_id] = r.descriere; });
-        DESCP_LIPSA = false; DESCPMAP = m; return m;
-      }catch(err){ DESCP_LIPSA = true; DESCPMAP = {}; return {}; }
-    })();
+// Se aduc DOAR pentru P-urile cerute (randurile de pe ecran), in loturi, si se tin in
+// DESCPMAP; ce s-a adus o data nu se mai cere. Asa tabelul nu trage 2.112 descrieri ca sa
+// afiseze 200 de randuri.
+let DESCPMAP = {}, DESCP_CERUTE = new Set(), DESCP_LIPSA = false;
+async function descPPentru(ids){
+  const noi = (ids||[]).filter(id => id && !DESCP_CERUTE.has(id));
+  if(noi.length && !DESCP_LIPSA){
+    try{
+      for(let i=0;i<noi.length;i+=150){
+        const lot = noi.slice(i, i+150);
+        const d = await q(`/viz_p_descriere?select=p_id,descriere&p_id=in.${encodeURIComponent('('+lot.join(',')+')')}`);
+        d.forEach(r=>{ if(r.descriere) DESCPMAP[r.p_id] = r.descriere; });
+        lot.forEach(id=> DESCP_CERUTE.add(id));
+      }
+    }catch(err){ DESCP_LIPSA = true; }   // vederea lipseste: migrarea nu e rulata
   }
-  return DESCP;
+  return DESCPMAP;
 }
-function descPReset(){ DESCP = null; DESCPMAP = {}; DESCP_LIPSA = false; }
+function descPReset(){ DESCPMAP = {}; DESCP_CERUTE = new Set(); DESCP_LIPSA = false; }
 function descPGol(){
   return DESCP_LIPSA
     ? '<span class="hint" style="margin:0">migrarea <b>migrari/descriere_p.sql</b> nu e rulata inca in baza</span>'
@@ -710,7 +760,7 @@ async function showDetail(id){
         const bt=document.getElementById('edit-texte'); if(bt) bt.onclick = ()=> modalEditeazaTexte(n);
       }
       const ps = await q(`/viz_leaf_p?leaf_id=eq.${encodeURIComponent(id)}&select=*&order=pozitie`);
-      const dmap = await descPIncarca();
+      const dmap = await descPPentru(ps.map(x=>x.p_id));
       const plist = document.getElementById('p-list');
       if(!ps.length){ plist.innerHTML='<div class="loading">fara P-uri</div>'; return; }
       plist.innerHTML='';
@@ -1110,16 +1160,17 @@ async function renderNomTable(v){
   nomPane.innerHTML = '<div class="loading" style="padding:16px">se incarca...</div>';
   try{
     const e = encodeURIComponent('%'+v+'%');
-    let rows, head, body, tool, total = 0, cale = '', toate = [];
+    let rows, head, body, tool, total = 0, cale = '', cheie = '', select = '', filtru = '';
     const pg = NOMPAGE[nomKey()] || 0, de = pg*NOMPAG;
     if(MODE==='p'){
-      const flt = v ? `&or=(denumire.ilike.${e},sinonime.ilike.${e},p_id.ilike.${e})` : '';
-      cale = `/viz_p_nomenclator?select=p_id,denumire,um,nr_leafuri,sinonime${flt}`;
-      toate = await nomIncarca('p|'+NOMSORT.p+'|'+v, cale, 'p_id', NOMSORT.p);
+      filtru = v ? `&or=(denumire.ilike.${e},sinonime.ilike.${e},p_id.ilike.${e})` : '';
+      cale = '/viz_p_nomenclator'; cheie = 'p_id'; select = 'p_id,denumire,um,nr_leafuri,sinonime';
+      const pagina = await nomIncarcaPagina('p|'+NOMSORT.p+'|'+v,
+        {vedere:cale, cheie, select, filtru, sortare:NOMSORT.p, pagina:pg, pas:NOMPAG});
       if(gen !== NOMREQ) return;      // intre timp a pornit alta randare — nu suprascrie ce e pe ecran
-      const dsc = await descPIncarca();
+      total = pagina.total; rows = pagina.randuri;
+      const dsc = await descPPentru(rows.map(r=>r.p_id));
       if(gen !== NOMREQ) return;
-      total = toate.length; rows = toate.slice(de, de+NOMPAG);
       tool = `<span class="sr-count">${total} P-uri${v?' care contin "'+esc(v)+'"':''}</span>
         <select id="nom-sort"><option value="p_id"${NOMSORT.p==='p_id'?' selected':''}>sortare: cod</option><option value="denumire"${NOMSORT.p==='denumire'?' selected':''}>sortare: denumire</option><option value="nr_leafuri.desc"${NOMSORT.p==='nr_leafuri.desc'?' selected':''}>sortare: cele mai folosite</option></select>
         <span class="hint" style="margin:0">click pe un rand = detalii si actiuni</span>
@@ -1133,11 +1184,12 @@ async function renderNomTable(v){
         <td><span class="p-um">${esc(r.um||'')}</span></td>
         <td><span class="nom-cnt">${r.nr_leafuri} leafuri</span></td></tr>`).join('');
     } else {
-      const flt = v ? `&or=(denumire.ilike.${e},prm_id.ilike.${e},valori_lista.ilike.${e})` : '';
-      cale = `/viz_prm_nomenclator?select=prm_id,denumire,tip,um,valori_lista,nr_utilizari${flt}`;
-      toate = await nomIncarca('prm|'+NOMSORT.prm+'|'+v, cale, 'prm_id', NOMSORT.prm);
+      filtru = v ? `&or=(denumire.ilike.${e},prm_id.ilike.${e},valori_lista.ilike.${e})` : '';
+      cale = '/viz_prm_nomenclator'; cheie = 'prm_id'; select = 'prm_id,denumire,tip,um,valori_lista,nr_utilizari';
+      const pagina = await nomIncarcaPagina('prm|'+NOMSORT.prm+'|'+v,
+        {vedere:cale, cheie, select, filtru, sortare:NOMSORT.prm, pagina:pg, pas:NOMPAG});
       if(gen !== NOMREQ) return;      // idem: randarea asta a fost depasita
-      total = toate.length; rows = toate.slice(de, de+NOMPAG);
+      total = pagina.total; rows = pagina.randuri;
       tool = `<span class="sr-count">${total} parametri${v?' care contin "'+esc(v)+'"':''}</span>
         <select id="nom-sort"><option value="prm_id"${NOMSORT.prm==='prm_id'?' selected':''}>sortare: cod</option><option value="denumire"${NOMSORT.prm==='denumire'?' selected':''}>sortare: denumire</option><option value="nr_utilizari.desc"${NOMSORT.prm==='nr_utilizari.desc'?' selected':''}>sortare: cei mai folositi</option></select>
         <span class="hint" style="margin:0">valorile se editeaza direct in tabel; click pe rand = P-urile care il folosesc</span>
@@ -1173,10 +1225,21 @@ async function renderNomTable(v){
       if(g('prev'))  g('prev').onclick  = ()=> goPag(pg-1);
       if(g('next'))  g('next').onclick  = ()=> goPag(pg+1);
       if(g('last'))  g('last').onclick  = ()=> goPag(nrPag-1);
-      // exportul duce si descrierea: e in alta vedere, deci se lipeste aici, la salvare
-      if(g('json'))  g('json').onclick  = () => salveazaJSON(
-        MODE==='p' ? toate.map(r=>({...r, descriere: DESCPMAP[r.p_id] || ''})) : toate,
-        (MODE==='p'?'quadra-p':'quadra-parametri') + (v?'-cautare':'') + '.json');
+      // Exportul e singurul loc care mai are nevoie de TOT setul: se aduce abia la click,
+      // prin cursor, si numai pentru filtrul curent. Descrierea vine din alta vedere si se
+      // lipeste tot aici, la salvare.
+      if(g('json'))  g('json').onclick  = async (ev)=>{
+        const b = ev.currentTarget; const txt = b.textContent;
+        b.disabled = true;
+        try{
+          const tot = await qTot(`${cale}?select=${select}${filtru}`, cheie,
+            n=>{ b.textContent = `se aduc ${n}/${total}...`; });
+          if(MODE==='p') await descPPentru(tot.map(r=>r.p_id));
+          salveazaJSON(MODE==='p' ? tot.map(r=>({...r, descriere: DESCPMAP[r.p_id] || ''})) : tot,
+            (MODE==='p'?'quadra-p':'quadra-parametri') + (v?'-cautare':'') + '.json');
+        }catch(err){ toast(err.message, true); }
+        finally{ b.disabled = false; b.textContent = txt; }
+      };
     });
     const srt = document.getElementById('nom-sort');
     srt.onchange = ()=>{ NOMSORT[MODE==='p'?'p':'prm'] = srt.value; NOMPAGE[nomKey()]=0; renderNomTable(curSearch()); };
@@ -1240,7 +1303,20 @@ async function renderNomTable(v){
       PENDING_EXPAND = null;
       if(tr){ toggleExp(tr); tr.scrollIntoView({block:'center'}); }
     }
-  }catch(err){ if(gen === NOMREQ) nomPane.innerHTML = '<div class="loading" style="padding:16px">eroare: '+esc(err.message)+'</div>'; }
+  }catch(err){
+    if(gen !== NOMREQ) return;
+    // Sortarea dupa numarul de utilizari nu se poate pagina pe vederile de azi: cheia de
+    // sortare e chiar coloana scumpa. Nu lasam ecranul gol — revenim la sortarea pe cod si
+    // spunem de ce.
+    if(err.message === 'SORTARE_INDISPONIBILA'){
+      NOMSORT[nomKey()] = MODE==='p' ? 'p_id' : 'prm_id';
+      NOMPAGE[nomKey()] = 0;
+      toast('Sortarea dupa cate ori e folosit cere vederile rapide din migrari/vederi_rapide_nomenclator.sql. '
+          + 'Pana atunci raman sortarea pe cod.', true);
+      return renderNomTable(v);
+    }
+    nomPane.innerHTML = '<div class="loading" style="padding:16px">eroare: '+esc(err.message)+'</div>';
+  }
 }
 
 function valAdd(btn){
@@ -1294,7 +1370,7 @@ async function renderPExp(td, pId){
   td.innerHTML = '<div class="loading">se incarca...</div>';
   try{
     const d = await rpc('viz_p_info',{_p:pId});
-    const descP = (await descPIncarca())[pId] || '';
+    const descP = (await descPPentru([pId]))[pId] || '';
     let h = `<div class="exp-head"><b>${esc(d.denumire)}</b><span class="p-id">${esc(d.p_id)}</span><span class="p-um">${esc(d.um||'')}</span><span class="hint" style="margin:0">pe ${d.nr_leafuri} leafuri</span>`;
     if(EDIT) h += `<button class="btn mini" id="xp-ren">&#9998; redenumeste</button><button class="btn mini" id="xp-um">schimba UM</button><button class="btn mini" id="xp-sin">sinonime</button><button class="btn mini danger" id="xp-del">&#10005; sterge P</button>`;
     h += `</div>`;
