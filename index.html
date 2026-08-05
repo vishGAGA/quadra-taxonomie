@@ -169,6 +169,12 @@
   .vadd{display:flex; gap:6px; margin-top:6px; align-items:center; flex-wrap:wrap;}
   .vadd input{flex:1; min-width:140px; padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:12px; outline:none;}
   .vadd input:focus{border-color:var(--accent);}
+  /* Introducerea valorilor: UN CAMP = O VALOARE. Separatorul " / " ramane doar in drumul
+     catre RPC, utilizatorul nu-l mai scrie si nu mai poate gresi lipind valorile. */
+  .vgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px; width:100%;}
+  .vgrid input{padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:12px; outline:none; width:100%;}
+  .vgrid input:focus{border-color:var(--accent);}
+  .vgrid-tool{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px;}
   .valprev{font-size:11px; color:var(--muted); line-height:1.7; margin-top:4px;}
   .valprev .vchip{font-size:10.5px; padding:1px 8px;}
   .vadd .valprev{flex-basis:100%; margin-top:0;}
@@ -352,12 +358,16 @@ async function rpc(fn, args){
     let m=txt; try{ m=JSON.parse(txt).message||txt; }catch(e){}
     m = m.replace(/^.*?:\s*/,'');
     if(m.indexOf('PIN de editare invalid')>=0){ PIN=''; localStorage.removeItem('quadra_pin'); }
-    if(/Could not find the function|schema cache/i.test(m) && /edit_elimina_|edit_sterge_prm_uri/.test(fn)){
+    // Functie inexistenta in baza: mesajul brut al serverului nu ajuta pe nimeni. Il inlocuim,
+    // dar MARCAM eroarea (`lipsa`), ca sa se poata recunoaste si dupa rescrierea textului —
+    // altfel sonda de disponibilitate ar crede ca functia exista.
+    const lipsa = /Could not find the function|schema cache/i.test(m);
+    if(lipsa && /edit_elimina_|edit_sterge_prm_uri/.test(fn)){
       m = 'Stergerea definitiva nu e activata inca in baza de date. Trebuie rulata migrarea '+
           'migrari/stergere_definitiva_p_prm.sql (functiile edit_elimina_p_uri / edit_elimina_prm_uri / edit_sterge_prm_uri). '+
           'Pana atunci, foloseste optiunea "Retrage" pentru P-uri.';
     }
-    throw new Error(m);
+    const e = new Error(m); e.lipsa = lipsa; throw e;
   }
   try{ return JSON.parse(txt); }catch(e){ return txt; }
 }
@@ -445,29 +455,54 @@ function confirmaDubla({titlu, rezumat, detalii, textOk, cuvant}){
     obs.observe(overlay, {attributes:true, attributeFilter:['class']});
   });
 }
+// Nu toate RPC-urile de stergere exista in baza: edit_elimina_p_uri, edit_sterge_prm_uri si
+// edit_elimina_prm_uri sunt scrise in migrari/stergere_definitiva_p_prm.sql, dar migrarea nu
+// e rulata. Le probam O SINGURA DATA, cu un ID inexistent (deci fara sa atingem nimic), ca sa
+// putem spune limpede ce lipseste in loc sa aruncam eroarea bruta a serverului in fata.
+const RPCDISP = {};
+function eRPCLipsa(err){ return !!(err && (err.lipsa || /could not find the function|PGRST202/i.test(err.message||''))); }
+function mesajRPCLipsa(nume){
+  return `Functia ${nume} nu exista inca in baza. Ruleaza migrari/stergere_definitiva_p_prm.sql in SQL Editor-ul Supabase, apoi reincearca.`;
+}
+async function rpcDisponibil(nume, argsProba){
+  if(RPCDISP[nume] !== undefined) return RPCDISP[nume];
+  try{ await rpc(nume, argsProba); RPCDISP[nume] = true; }
+  catch(err){ RPCDISP[nume] = !eRPCLipsa(err); }
+  return RPCDISP[nume];
+}
 // Dialog cu doua feluri de stergere: retragere (reversibila la nivel de date) vs eliminare definitiva.
+// `disp` spune care dintre cele doua se poate face acum; ce lipseste apare dezactivat, cu motivul.
 // Rezolva cu 'retras' | 'definitiv' | null (anulat).
-function cereModStergere(ce, n, lista){
+function cereModStergere(ce, n, lista, disp){
+  disp = disp || {retras:true, definitiv:true};
   return new Promise(resolve=>{
     let raspuns = null;
     const m = showModal(`Stergere ${esc(ce)} — ${n} ${n===1?'element':'elemente'}`, `
       <div class="hint">Alege ce se intampla cu ${n===1?'elementul':'cele '+n+' elemente'}. Ambele variante il scot de pe toate
       leafurile/perechile pe care apare. Diferenta e ce ramane in nomenclator.</div>
       <pre style="max-height:190px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;font-size:11.5px;white-space:pre-wrap">${esc(lista)}</pre>
-      <label style="display:block;margin-top:10px;cursor:pointer">
-        <input type="radio" name="delmod" value="retras" checked>
+      <label style="display:block;margin-top:10px;cursor:pointer;opacity:${disp.retras?1:.45}">
+        <input type="radio" name="delmod" value="retras"${disp.retras?' checked':' disabled'}>
         <b>Retrage</b> — ramane in nomenclator cu status 'retras'. Istoricul si trimiterile catre el se pastreaza. Recomandat.
+        ${disp.retras?'':'<div class="hint" style="margin:2px 0 0">indisponibil: lipseste din baza</div>'}
       </label>
-      <label style="display:block;margin-top:8px;cursor:pointer">
-        <input type="radio" name="delmod" value="definitiv">
+      <label style="display:block;margin-top:8px;cursor:pointer;opacity:${disp.definitiv?1:.45}">
+        <input type="radio" name="delmod" value="definitiv"${disp.definitiv?(disp.retras?'':' checked'):' disabled'}>
         <b>Elimina definitiv</b> — dispare complet din nomenclator. Codul devine liber si nu mai poate fi recuperat.
+        ${disp.definitiv?'':'<div class="hint" style="margin:2px 0 0">indisponibil: lipseste din baza</div>'}
       </label>
       <div class="hint" id="dm-warn" style="margin-top:8px"></div>`,
       `<button class="btn" id="dm-no">renunta</button><button class="btn danger" id="dm-yes">confirma</button>`);
     const warn = m.querySelector('#dm-warn');
     const upd = ()=>{
-      const v = m.querySelector('input[name=delmod]:checked').value;
-      warn.innerHTML = v==='definitiv'
+      const sel = m.querySelector('input[name=delmod]:checked');
+      if(!sel){   // nicio varianta disponibila: migrarea de stergeri nu e rulata
+        warn.innerHTML = '<b style="color:var(--rosu,#f87171)">Nu se poate sterge inca:</b> functiile de stergere pentru '
+          + esc(ce) + ' lipsesc din baza. Ruleaza <b>migrari/stergere_definitiva_p_prm.sql</b> in SQL Editor-ul Supabase.';
+        m.querySelector('#dm-yes').disabled = true;
+        return;
+      }
+      warn.innerHTML = sel.value==='definitiv'
         ? '<b style="color:var(--rosu,#f87171)">Atentie:</b> stergerea definitiva nu se poate anula, nici din pagina, nici prin undo.'
         : 'Perechile care ar ramane sub 2 parametri blocheaza operatiunea (regula E3).';
     };
@@ -511,9 +546,8 @@ function pickParams(titlu, onDone){
       <label>Denumire parametru nou</label><input type="text" id="np-den">
       <label>Tip</label><select id="np-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
       <label>UM (optional: mm, cm, m, kW...)</label><input type="text" id="np-um">
-      <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="np-val" placeholder="ex: mica / medie / mare">
-      <div class="valprev" id="np-val-prev"></div>
-      <button class="btn primary" id="np-add">adauga la lista</button>
+      <label>Valori — cate una in fiecare camp</label><div id="np-val">${campuriValoriHTML([])}</div>
+      <button class="btn primary" id="np-add" style="margin-top:8px">adauga la lista</button>
     </div>`,
     `<button class="btn" id="mp-cancel">renunta</button><button class="btn primary" id="mp-ok">gata (foloseste parametrii alesi)</button>`);
   const chips=[]; const chipsEl=m.querySelector('#mp-chips');
@@ -527,13 +561,15 @@ function pickParams(titlu, onDone){
     r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
     r=>{ if(!chips.some(c=>c.prm_id===r.prm_id)){ chips.push(r); renderChips(); } });
   m.querySelector('#mp-new').onclick = ()=>{ const f=m.querySelector('#mp-newform'); f.style.display = f.style.display==='none'?'block':'none'; };
-  wireValPreview(m.querySelector('#np-val'), m.querySelector('#np-val-prev'));
+  campuriValoriWire(m.querySelector('#np-val'));
   m.querySelector('#np-add').onclick = ()=>{
     const den=m.querySelector('#np-den').value.trim(), tip=m.querySelector('#np-tip').value,
-          um=m.querySelector('#np-um').value.trim(), val=m.querySelector('#np-val').value.trim();
-    if(den.length<3 || !val){ toast('Completeaza denumirea si valorile parametrului nou.', true); return; }
+          um=m.querySelector('#np-um').value.trim(), val=campuriValoriCitite(m.querySelector('#np-val')).join(' / ');
+    if(den.length<3 || !val){ toast('Completeaza denumirea si cel putin o valoare.', true); return; }
     chips.push({nou:true, denumire:den, tip, um, valori:val}); renderChips();
-    ['#np-den','#np-um','#np-val'].forEach(s=>m.querySelector(s).value='');
+    ['#np-den','#np-um'].forEach(s=>m.querySelector(s).value='');
+    m.querySelectorAll('#np-val .vfield').forEach(i=> i.value='');
+    m.querySelector('#np-val .valprev').innerHTML='';
   };
   m.querySelector('#mp-cancel').onclick = closeModal;
   m.querySelector('#mp-ok').onclick = async ()=>{
@@ -751,15 +787,14 @@ async function renderPrms(list, leafId, pId){
             await rpc('edit_sterge_prm_de_pe_pereche',{_leaf:leafId,_p:pId,_prm:prm});
             toast('Parametru sters.'); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
           } else if(act==='vals'){
-            modalInput('Adauga valori la '+prm,
-              'Valorile noi se adauga la lista existenta, inaintea optiunii "alta valoare". Elementele se separa cu " / " CU SPATII — scris lipit (fara spatii) ramane UN SINGUR element, verifica mai jos cate se salveaza.',
-              'Valori noi', '', async v=>{
-                if(!v.trim()) return;
+            modalValori('Adauga valori la '+prm,
+              'Valorile noi se adauga la lista existenta, inaintea optiunii "alta valoare". <b>Cate o valoare in fiecare camp</b> — nu mai scrii separatori.',
+              [], async vals=>{
                 try{
-                  await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:v});
-                  toast('Valori adaugate la '+prm+'.'); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
+                  await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:vals.join(' / ')});
+                  toast(vals.length+' valori adaugate la '+prm+'.'); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
                 }catch(err){ toast(err.message, true); }
-              }, {splitPreview:true});
+              });
           } else if(act==='gen-prm'){
             genPrm(leafId, pId, list);
           } else if(act==='add-exist'){
@@ -779,14 +814,13 @@ async function renderPrms(list, leafId, pId){
               <label>Denumire</label><input type="text" id="cp-den">
               <label>Tip</label><select id="cp-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
               <label>UM (optional)</label><input type="text" id="cp-um" placeholder="mm / cm / kW ...">
-              <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="cp-val" placeholder="ex: 10 / 15 / 20">
-              <div class="valprev" id="cp-val-prev"></div>`,
+              <label>Valori — cate una in fiecare camp</label><div id="cp-val">${campuriValoriHTML([])}</div>`,
               `<button class="btn primary" id="cp-ok">creeaza si ataseaza</button>`);
-            wireValPreview(m.querySelector('#cp-val'), m.querySelector('#cp-val-prev'));
+            campuriValoriWire(m.querySelector('#cp-val'));
             m.querySelector('#cp-ok').onclick = async ()=>{
               try{
                 const idn = await rpc('edit_creeaza_prm',{_denumire:m.querySelector('#cp-den').value,_um:m.querySelector('#cp-um').value||null,
-                  _valori:m.querySelector('#cp-val').value,_tip:m.querySelector('#cp-tip').value,_leaf:leafId,_p:pId});
+                  _valori:campuriValoriCitite(m.querySelector('#cp-val')).join(' / '),_tip:m.querySelector('#cp-tip').value,_leaf:leafId,_p:pId});
                 closeModal(); toast('Creat si atasat: '+idn); list.dataset.loaded=''; await renderPrms(list, leafId, pId);
               }catch(err){ toast(err.message, true); }
             };
@@ -935,16 +969,60 @@ function chipsHTML(valori, editable){
     return `<span class="vchip${editable?' edit':''}" data-val="${esc(v)}"${editable?' title="click = redenumeste; x = sterge"':''}>${esc(v)}${editable?'<span class="x" title="sterge valoarea">&#10005;</span>':''}</span>`;
   }).join('');
 }
-function wireValPreview(inputEl, previewEl){
-  if(!inputEl || !previewEl) return;
+// ---- Valori de parametru: cate un camp pentru fiecare valoare ----
+// RPC-ul primeste tot un singur text separat cu " / ", dar separatorul nu mai e treaba
+// utilizatorului: el completeaza casute distincte, cate una pe valoare. Asa dispare
+// greseala clasica (valori scrise lipit, care ajungeau un singur element in lista).
+const NR_CAMPURI_VAL = 5;
+function campuriValoriHTML(initiale){
+  const vals = initiale || [];
+  const n = Math.max(NR_CAMPURI_VAL, vals.length + 1);
+  let h = '<div class="vgrid">';
+  for(let i=0;i<n;i++) h += `<input type="text" class="vfield" placeholder="valoarea ${i+1}" value="${esc(vals[i]||'')}">`;
+  h += `</div><div class="vgrid-tool"><button type="button" class="btn mini" data-act="vmai">+ inca un camp</button>
+        <span class="hint" style="margin:0">un camp = o valoare; nu trebuie completate toate</span></div>
+        <div class="valprev"></div>`;
+  return h;
+}
+function campuriValoriCitite(root){
+  return Array.from(root.querySelectorAll('.vfield')).map(i=>i.value.trim()).filter(Boolean);
+}
+function campuriValoriWire(root){
+  const prev = root.querySelector('.valprev');
   const upd = ()=>{
-    const vals = splitVals(inputEl.value).filter(v=> v.toLowerCase()!=='alta valoare');
-    if(!vals.length){ previewEl.innerHTML=''; return; }
-    const chips = vals.map(v=>`<span class="vchip">${esc(v)}</span>`).join(' ');
-    previewEl.innerHTML = `va salva <b>${vals.length}</b> ${vals.length>1?'elemente separate':'element'}: ${chips}`;
+    if(!prev) return;
+    const vals = campuriValoriCitite(root).filter(v=> v.toLowerCase()!=='alta valoare');
+    prev.innerHTML = vals.length
+      ? `va salva <b>${vals.length}</b> ${vals.length>1?'valori separate':'valoare'}: ` + vals.map(v=>`<span class="vchip">${esc(v)}</span>`).join(' ')
+      : '';
   };
-  inputEl.addEventListener('input', upd);
+  root.addEventListener('input', upd);
+  const b = root.querySelector('[data-act="vmai"]');
+  if(b) b.onclick = ()=>{
+    const g = root.querySelector('.vgrid');
+    const i = document.createElement('input');
+    i.type='text'; i.className='vfield'; i.placeholder='valoarea '+(g.children.length+1);
+    g.appendChild(i); i.focus();
+  };
+  root.querySelectorAll('.vfield').forEach(i=> i.addEventListener('keydown', e=>{
+    if(e.key==='Enter'){ e.preventDefault(); const ok = root.closest('.modal')?.querySelector('#mv-ok'); if(ok) ok.click(); }
+  }));
   upd();
+  return ()=> campuriValoriCitite(root);
+}
+// Modal cu campuri separate. onOk primeste un ARRAY de valori (niciodata gol).
+function modalValori(titlu, hint, initiale, onOk){
+  const m = showModal(esc(titlu), `<div class="hint">${hint}</div><div id="mv-box">${campuriValoriHTML(initiale)}</div>`,
+    `<button class="btn" id="mv-c">renunta</button><button class="btn primary" id="mv-ok">salveaza</button>`);
+  const box = m.querySelector('#mv-box');
+  const citeste = campuriValoriWire(box);
+  m.querySelector('#mv-c').onclick = closeModal;
+  m.querySelector('#mv-ok').onclick = ()=>{
+    const vals = citeste();
+    if(!vals.length){ toast('Completeaza cel putin un camp.', true); return; }
+    closeModal(); onOk(vals);
+  };
+  setTimeout(()=>{ const f = box.querySelector('.vfield'); if(f) f.focus(); }, 60);
 }
 function rerenderChips(box, prm, lista){
   box.innerHTML = chipsHTML(lista, EDIT);
@@ -1072,7 +1150,7 @@ async function renderNomTable(v){
         <td><b>${esc(r.denumire)}</b></td>
         <td class="prm-tip">${esc(r.tip==='lista deschisa'?'deschisa':'inchisa')}</td>
         <td>${esc(r.um||'')}</td>
-        <td class="vcell"><div class="vchips" data-prm="${esc(r.prm_id)}">${chipsHTML(r.valori_lista, EDIT)}</div>${EDIT?`<div class="vadd"><input placeholder="valoare noua (separate cu ' / ' CU SPATII)" data-prm="${esc(r.prm_id)}"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button><div class="valprev"></div></div>`:''}</td>
+        <td class="vcell"><div class="vchips" data-prm="${esc(r.prm_id)}">${chipsHTML(r.valori_lista, EDIT)}</div>${EDIT?`<div class="vadd"><button class="btn mini" data-act="vadd" data-prm="${esc(r.prm_id)}">+ adauga valori</button><button class="btn mini" data-act="vset" data-prm="${esc(r.prm_id)}">&#9998; rescrie tot</button></div>`:''}</td>
         <td><span class="nom-cnt">${r.nr_utilizari}x</span></td></tr>`).join('');
     }
     const nrPag = Math.max(1, Math.ceil(total/NOMPAG));
@@ -1114,12 +1192,15 @@ async function renderNomTable(v){
         const chosen = selCbs().map(cb=>({id:cb.dataset.id, den:cb.dataset.den}));
         if(!chosen.length) return;
         const lista = chosen.map(c=>c.id+' — '+c.den).join('\n');
-        const def = await cereModStergere('P', chosen.length, lista);
+        const disp = {retras:    await rpcDisponibil('edit_sterge_p_uri',  {_p_uri:['ZZ-0000']}),
+                      definitiv: await rpcDisponibil('edit_elimina_p_uri', {_p_uri:['ZZ-0000']})};
+        const def = await cereModStergere('P', chosen.length, lista, disp);
         if(!def) return;
+        const fn = def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri';
         try{
-          toast(await rpc(def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri',{_p_uri:chosen.map(c=>c.id)}));
+          toast(await rpc(fn,{_p_uri:chosen.map(c=>c.id)}));
           nomCacheReset(); renderNomTable(curSearch());
-        }catch(err){ toast(err.message, true); }
+        }catch(err){ toast(eRPCLipsa(err)?mesajRPCLipsa(fn):err.message, true); }
       };
     }
     if(EDIT && MODE==='prm'){
@@ -1132,12 +1213,15 @@ async function renderNomTable(v){
         const chosen = selCbs().map(cb=>({id:cb.dataset.id, den:cb.dataset.den, uz:+cb.dataset.uz}));
         if(!chosen.length) return;
         const lista = chosen.map(c=>`${c.id} — ${c.den}${c.uz?` (folosit pe ${c.uz} perechi)`:' (nefolosit)'}`).join('\n');
-        const def = await cereModStergere('parametru', chosen.length, lista);
+        const disp = {retras:    await rpcDisponibil('edit_sterge_prm_uri',  {_prm_uri:['ZZ-0000']}),
+                      definitiv: await rpcDisponibil('edit_elimina_prm_uri', {_prm_uri:['ZZ-0000']})};
+        const def = await cereModStergere('parametru', chosen.length, lista, disp);
         if(!def) return;
+        const fn = def==='definitiv'?'edit_elimina_prm_uri':'edit_sterge_prm_uri';
         try{
-          toast(await rpc(def==='definitiv'?'edit_elimina_prm_uri':'edit_sterge_prm_uri',{_prm_uri:chosen.map(c=>c.id)}));
+          toast(await rpc(fn,{_prm_uri:chosen.map(c=>c.id)}));
           nomCacheReset(); renderNomTable(curSearch());
-        }catch(err){ toast(err.message, true); }
+        }catch(err){ toast(eRPCLipsa(err)?mesajRPCLipsa(fn):err.message, true); }
       };
     }
     nomPane.querySelectorAll('tr.datarow').forEach(tr=>{
@@ -1149,10 +1233,6 @@ async function renderNomTable(v){
     if(EDIT && MODE==='prm'){
       nomPane.querySelectorAll('.vchips[data-prm]').forEach(box=> wireChips(box, box.dataset.prm));
       nomPane.querySelectorAll('[data-act="vadd"]').forEach(b=> b.onclick = ()=> valAdd(b));
-      nomPane.querySelectorAll('.vadd input').forEach(i=> i.addEventListener('keydown', e=>{
-        if(e.key==='Enter'){ const b=i.closest('.vadd').querySelector('[data-act="vadd"]'); if(b) b.click(); }
-      }));
-      nomPane.querySelectorAll('.vadd input').forEach(i=> wireValPreview(i, i.closest('.vadd').querySelector('.valprev')));
       nomPane.querySelectorAll('[data-act="vset"]').forEach(b=> b.onclick = ()=> valSet(b));
     }
     if(PENDING_EXPAND){
@@ -1163,35 +1243,35 @@ async function renderNomTable(v){
   }catch(err){ if(gen === NOMREQ) nomPane.innerHTML = '<div class="loading" style="padding:16px">eroare: '+esc(err.message)+'</div>'; }
 }
 
-async function valAdd(btn){
+function valAdd(btn){
   const prm = btn.dataset.prm;
-  const inp = btn.closest('.vadd').querySelector('input');
-  const v = inp.value.trim();
-  if(!v){ toast('Scrie valoarea noua in casuta (mai multe se separa cu " / ").', true); return; }
-  try{
-    const lista = await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:v});
-    rerenderChips(btn.closest('td').querySelector('.vchips'), prm, lista);
-    // Golirea prin `inp.value=''` NU declanseaza evenimentul 'input', deci previzualizarea
-    // ramanea pe ecran cu chip-urile tocmai salvate — arata ca si cum valorile s-ar fi
-    // adaugat de doua ori. Il declansam explicit ca sa se stearga si previzualizarea.
-    inp.value=''; inp.dispatchEvent(new Event('input'));
-    toast('Valori adaugate la '+prm+'.');
-  }catch(err){ toast(err.message, true); }
+  const box = btn.closest('td').querySelector('.vchips');
+  modalValori('Adauga valori la '+prm,
+    'Valorile noi se adauga la lista existenta, inaintea optiunii "alta valoare". <b>Cate o valoare in fiecare camp</b> — nu mai scrii separatori. Un slash din interiorul unei valori (ex: C20/25) e permis si nu o rupe in doua.',
+    [], async vals=>{
+      try{
+        const lista = await rpc('edit_adauga_valori_prm',{_prm:prm,_valori_noi:vals.join(' / ')});
+        rerenderChips(box, prm, lista);
+        toast(vals.length+' valori adaugate la '+prm+'.');
+      }catch(err){ toast(err.message, true); }
+    });
 }
 function valSet(btn){
   const prm = btn.dataset.prm;
   const box = btn.closest('td').querySelector('.vchips');
-  const cur = Array.from(box.querySelectorAll('.vchip')).map(c=>c.dataset.val||c.textContent.replace(/✕$/,'').trim()).join(' / ');
-  modalInput('Rescrie valorile — '+prm,
-    'Inlocuiesti complet lista de valori. Elementele se separa cu " / " CU SPATII (spatiu-slash-spatiu); scris lipit (fara spatii, ex: C20/25 sau 4/5/6) ramane UN SINGUR element — verifica mai jos cate elemente se salveaza. La listele deschise, "alta valoare" se pastreaza automat.',
-    'Valori', cur, async v=>{
+  const cur = Array.from(box.querySelectorAll('.vchip'))
+    .map(c=>c.dataset.val||c.textContent.replace(/✕$/,'').trim())
+    .filter(v=> v.toLowerCase()!=='alta valoare');
+  modalValori('Rescrie valorile — '+prm,
+    'Inlocuiesti complet lista. Campurile vin completate cu valorile de acum: sterge, schimba sau adauga. <b>Un camp = o valoare.</b> La listele deschise, "alta valoare" se pastreaza automat.',
+    cur, async vals=>{
       try{
-        await rpc('edit_prm_seteaza_valori',{_prm:prm,_valori:v});
+        await rpc('edit_prm_seteaza_valori',{_prm:prm,_valori:vals.join(' / ')});
         const fresh = await q(`/viz_prm_nomenclator?prm_id=eq.${encodeURIComponent(prm)}&select=valori_lista`);
         if(fresh[0]) rerenderChips(box, prm, fresh[0].valori_lista);
         toast('Valori salvate pentru '+prm+'.');
       }catch(err){ toast(err.message, true); }
-    }, {textarea:true, splitPreview:true});
+    });
 }
 
 function toggleExp(tr){
@@ -1259,17 +1339,16 @@ async function renderPExp(td, pId){
           try{ toast(await rpc('edit_redenumeste_prm',{_prm:b.dataset.prm,_denumire_noua:v})); refreshNom(pId); }catch(err){ toast(err.message,true); }
         }));
     pl.querySelectorAll('[data-act="pval"]').forEach(b=> b.onclick = ()=>
-      modalInput('Adauga valoare la '+b.dataset.prm,
-        'Valoarea intra inaintea optiunii "alta valoare". Mai multe valori se separa cu " / " CU SPATII (spatiu-slash-spatiu); scris lipit (fara spatii, ex: C20/25 sau 4/5/6) ramane UN SINGUR element — verifica mai jos cate elemente se salveaza.',
-        'Valoare noua', '', async v=>{
-          if(!v.trim()) return;
+      modalValori('Adauga valori la '+b.dataset.prm,
+        'Valorile intra inaintea optiunii "alta valoare". <b>Cate o valoare in fiecare camp</b> — nu mai scrii separatori. Un slash din interiorul unei valori (ex: C20/25) e permis si nu o rupe in doua.',
+        [], async vals=>{
           try{
-            const lista = await rpc('edit_adauga_valori_prm',{_prm:b.dataset.prm,_valori_noi:v});
+            const lista = await rpc('edit_adauga_valori_prm',{_prm:b.dataset.prm,_valori_noi:vals.join(' / ')});
             const box = pl.querySelector(`.vchips[data-prm="${b.dataset.prm}"]`);
             if(box) rerenderChips(box, b.dataset.prm, lista);
-            toast('Valoare adaugata la '+b.dataset.prm+'.');
+            toast(vals.length+' valori adaugate la '+b.dataset.prm+'.');
           }catch(err){ toast(err.message,true); }
-        }, {splitPreview:true}));
+        }));
     td.querySelector('#xp-ren').onclick = ()=> modalInput('Redenumeste '+d.p_id,
       'Denumirea se schimba pe TOATE leafurile care folosesc P-ul; denumirea veche ramane sinonim.',
       'Denumire noua', d.denumire, async v=>{
@@ -1293,12 +1372,15 @@ async function renderPExp(td, pId){
         try{ toast(await rpc('edit_p_seteaza_sinonime',{_p:d.p_id,_sinonime:v})); refreshNom(pId); }catch(err){ toast(err.message,true); }
       }, {textarea:true});
     td.querySelector('#xp-del').onclick = async ()=>{
-      const def = await cereModStergere('P', 1, `${d.p_id} — ${d.denumire}\n(e pe ${d.nr_leafuri} leafuri, ${d.nr_perechi} perechi)`);
+      const disp = {retras:    await rpcDisponibil('edit_sterge_p_uri',  {_p_uri:['ZZ-0000']}),
+                    definitiv: await rpcDisponibil('edit_elimina_p_uri', {_p_uri:['ZZ-0000']})};
+      const def = await cereModStergere('P', 1, `${d.p_id} — ${d.denumire}\n(e pe ${d.nr_leafuri} leafuri, ${d.nr_perechi} perechi)`, disp);
       if(!def) return;
+      const fn = def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri';
       try{
-        toast(await rpc(def==='definitiv'?'edit_elimina_p_uri':'edit_sterge_p_uri',{_p_uri:[d.p_id]}));
+        toast(await rpc(fn,{_p_uri:[d.p_id]}));
         document.getElementById('search').value=''; EXPANDED=null; nomCacheReset(); renderNomTable('');
-      }catch(err){ toast(err.message,true); }
+      }catch(err){ toast(eRPCLipsa(err)?mesajRPCLipsa(fn):err.message,true); }
     };
     td.querySelector('#xp-addprm').onclick = ()=>{
       const m = showModal('Adauga parametru pe toate perechile lui '+d.p_id, `
@@ -1310,18 +1392,17 @@ async function renderPExp(td, pId){
           <label>Denumire</label><input type="text" id="pg-den">
           <label>Tip</label><select id="pg-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
           <label>UM (optional: mm, cm, kW...)</label><input type="text" id="pg-um">
-          <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="pg-val" placeholder="ex: mica / medie / mare">
-          <div class="valprev" id="pg-val-prev"></div>
+          <label>Valori — cate una in fiecare camp</label><div id="pg-val">${campuriValoriHTML([])}</div>
           <button class="btn primary mini" id="pg-creeaza" style="margin-top:8px">creeaza si ataseaza pe ${esc(d.p_id)}</button>
         </div>`);
       wireSearch(m.querySelector('#pg-q'), m.querySelector('#pg-res'),
         val=>rpc('edit_cauta_prm',{q:val}),
         r=>`<div class="sr-item"><span class="node-id">${esc(r.prm_id)}</span><span>${esc(r.denumire)}</span><span class="prm-tip">${esc(r.tip||'')}</span></div>`,
         async r=>{ try{ closeModal(); toast(await rpc('edit_p_adauga_prm_global',{_p:d.p_id,_prm:r.prm_id})); refreshNom(pId); }catch(err){ toast(err.message,true); } });
-      wireValPreview(m.querySelector('#pg-val'), m.querySelector('#pg-val-prev'));
+      campuriValoriWire(m.querySelector('#pg-val'));
       m.querySelector('#pg-creeaza').onclick = async ()=>{
         const den=m.querySelector('#pg-den').value.trim(), tip=m.querySelector('#pg-tip').value,
-              um=m.querySelector('#pg-um').value.trim(), val=m.querySelector('#pg-val').value.trim();
+              um=m.querySelector('#pg-um').value.trim(), val=campuriValoriCitite(m.querySelector('#pg-val')).join(' / ');
         if(den.length<3 || !val){ toast('Completeaza denumirea si valorile.', true); return; }
         try{
           const r = await rpc('edit_p_creeaza_prm_global',{_p:d.p_id,_denumire:den,_um:um||null,_valori:val,_tip:tip});
@@ -1382,12 +1463,10 @@ function modalInput(title, hint, label, initial, onOk, opts){
   const field = opts.select ? `<select id="mi-v">${opts.select.map(o=>`<option${o===initial?' selected':''}>${esc(o)}</option>`).join('')}</select>`
     : opts.textarea ? `<textarea id="mi-v" rows="4"></textarea>`
     : `<input type="text" id="mi-v">`;
-  const prev = opts.splitPreview ? `<div class="valprev" id="mi-prev"></div>` : '';
-  const m = showModal(esc(title), `${hint?`<div class="hint">${esc(hint)}</div>`:''}<label>${esc(label)}</label>${field}${prev}`,
+  const m = showModal(esc(title), `${hint?`<div class="hint">${esc(hint)}</div>`:''}<label>${esc(label)}</label>${field}`,
     `<button class="btn" id="mi-c">renunta</button><button class="btn primary" id="mi-ok">salveaza</button>`);
   const el = m.querySelector('#mi-v');
   if(!opts.select) el.value = initial||'';
-  if(opts.splitPreview) wireValPreview(el, m.querySelector('#mi-prev'));
   m.querySelector('#mi-c').onclick = closeModal;
   m.querySelector('#mi-ok').onclick = ()=>{ const v = el.value; closeModal(); onOk(v); };
   if(el.tagName==='INPUT') el.addEventListener('keydown', e=>{ if(e.key==='Enter') m.querySelector('#mi-ok').click(); });
@@ -1440,13 +1519,12 @@ function modalCreeazaPrmDictionar(){
     <label>Denumire</label><input type="text" id="dp-den">
     <label>Tip</label><select id="dp-tip"><option value="lista deschisa">lista deschisa (+ alta valoare)</option><option value="lista">lista inchisa</option></select>
     <label>UM (optional: mm, cm, kW...)</label><input type="text" id="dp-um">
-    <label>Valori (separate cu " / " CU SPATII — scris lipit ramane un singur element)</label><input type="text" id="dp-val" placeholder="ex: mica / medie / mare">
-    <div class="valprev" id="dp-val-prev"></div>`,
+    <label>Valori — cate una in fiecare camp</label><div id="dp-val">${campuriValoriHTML([])}</div>`,
     `<button class="btn primary" id="dp-ok">creeaza</button>`);
-  wireValPreview(m.querySelector('#dp-val'), m.querySelector('#dp-val-prev'));
+  campuriValoriWire(m.querySelector('#dp-val'));
   m.querySelector('#dp-ok').onclick = async ()=>{
     const den=m.querySelector('#dp-den').value.trim(), tip=m.querySelector('#dp-tip').value,
-          um=m.querySelector('#dp-um').value.trim(), val=m.querySelector('#dp-val').value.trim();
+          um=m.querySelector('#dp-um').value.trim(), val=campuriValoriCitite(m.querySelector('#dp-val')).join(' / ');
     if(den.length<3 || !val){ toast('Completeaza denumirea si valorile.', true); return; }
     try{
       const id = await rpc('edit_creeaza_prm_simplu',{_denumire:den,_um:um||null,_valori:val,_tip:tip});
@@ -1872,39 +1950,79 @@ async function modalAdaugaNod(n){
   };
 }
 
-// Sterge nodul, indiferent de tip. Cazurile sunt diferite si RPC-urile nu le acopera pe toate:
-//  - leaf                 -> modalul existent, care intreaba unde se muta P-urile
-//  - capitol cu copii     -> se refuza; nu exista stergere recursiva si nu o improvizam
-//  - capitol golit        -> ramane tip='familie' pentru totdeauna: nu se poate sterge (nu e leaf)
-//                            si nu se poate colapsa (n-are copii). Il deblocam punand un copil
-//                            temporar, colapsand (devine leaf) si stergandu-l apoi.
+// ---- Stergerea unui capitol, cu tot ce are sub el ----
+// Baza nu are o functie de stergere recursiva, dar are piesele din care se compune una:
+//   edit_sterge_leafuri (in lot) + edit_creeaza_leaf + edit_colapseaza_capitol.
+// Un capitol golit ramane tip='familie': nu se poate sterge (nu e leaf) si nu se poate
+// colapsa (n-are copii). Il deblocam punand un copil temporar, colapsand si stergand.
+function bucati(v, n){ const o=[]; for(let i=0;i<v.length;i+=n) o.push(v.slice(i,i+n)); return o; }
+
+// Subarborele, nivel cu nivel, mergand dupa parinte_id (nu dupa forma id-ului).
+// niveluri[0] = copiii directi; ultimul = cel mai adanc.
+async function subarboreNiveluri(nodId){
+  const niveluri = []; let curent = [nodId];
+  for(let d=0; d<25 && curent.length; d++){
+    let copii = [];
+    for(const lot of bucati(curent, 60)){
+      const lista = lot.map(x=>`"${x}"`).join(',');
+      copii = copii.concat(await q(`/viz_noduri?parinte_id=in.${encodeURIComponent('('+lista+')')}&select=nod_id,parinte_id,tip,denumire`));
+    }
+    if(!copii.length) break;
+    niveluri.push(copii);
+    curent = copii.filter(c=>c.tip!=='leaf').map(c=>c.nod_id);
+  }
+  return niveluri;
+}
+async function stergeCapitolGol(id){
+  await rpc('edit_creeaza_leaf',      { _parinte:id, _denumire:'temporar pentru stergere' });
+  await rpc('edit_colapseaza_capitol',{ _capitol:id });
+  await rpc('edit_sterge_leafuri',    { _leafuri:[id] });
+}
 async function structStergeNod(n){
   if(n.tip==='leaf') return modalStergeLeaf(n);
-  let copii=[];
-  try{ copii = await q(`/viz_noduri?parinte_id=eq.${encodeURIComponent(n.nod_id)}&select=nod_id,tip`); }
+  let niveluri = [];
+  try{ niveluri = await subarboreNiveluri(n.nod_id); }
   catch(e){ toast(e.message, true); return; }
-  if(copii.length){
-    const doarLeaf = copii.every(c=>c.tip==='leaf');
-    toast(`"${n.denumire}" are ${copii.length} copii. Goleste-l intai`
-      + (doarLeaf ? ' sau foloseste "Colapseaza capitolul in leaf".' : ' (are si subcapitole).'), true);
-    return;
-  }
+  const toti     = niveluri.flat();
+  const leafuri  = toti.filter(x=>x.tip==='leaf');
+  const capitole = toti.filter(x=>x.tip!=='leaf');
+  // cate operatii: leafurile pleaca in loturi, fiecare capitol cere 3 apeluri
+  const nrOp = bucati(leafuri.map(x=>x.nod_id), 50).length + (capitole.length + 1) * 3;
+
+  const detalii = toti.length
+    ? [`<b>${leafuri.length}</b> leafuri si <b>${capitole.length}</b> subcapitole se sterg odata cu el`,
+       'P-urile raman in dictionar; se pierd doar legaturile lor cu leafurile sterse',
+       'stergerea merge de jos in sus, in ' + nrOp + ' pasi — nu inchide pagina pana la mesajul final',
+       'se poate reveni cu <b>&#8617; Reverse</b>, dar undo-ul acopera ultimele operatii, nu tot lantul']
+    : ['nodul nu mai are copii, dar e inca marcat drept capitol, deci nu se poate sterge direct',
+       'il transform intai in leaf (copil temporar + colapsare) si abia apoi il sterg',
+       'se poate reveni imediat cu <b>&#8617; Reverse</b>'];
+
   if(!await confirmaDubla({
-    titlu:'Confirmi stergerea capitolului gol?',
-    rezumat:`Se sterge <span class="node-id">${esc(n.nod_id)}</span> &laquo;<b>${esc(n.denumire)}</b>&raquo;.`,
-    detalii:['nodul nu mai are copii, dar e inca marcat drept capitol, deci nu se poate sterge direct',
-             'il transform intai in leaf (copil temporar + colapsare) si abia apoi il sterg',
-             'se poate reveni imediat cu <b>&#8617; Reverse</b>'],
-    textOk:'Da, sterge capitolul', cuvant:'STERG'})) return;
+    titlu: toti.length ? 'Confirmi stergerea capitolului CU TOT CE ARE SUB EL?' : 'Confirmi stergerea capitolului gol?',
+    rezumat:`Se sterge <span class="node-id">${esc(n.nod_id)}</span> &laquo;<b>${esc(n.denumire)}</b>&raquo;`
+      + (toti.length ? ` si <b>${toti.length}</b> noduri de sub el.` : '.'),
+    detalii, textOk: toti.length ? 'Da, sterge tot' : 'Da, sterge capitolul', cuvant:'STERG'})) return;
+
+  let facut = 0;
+  const pas = ()=> toast(`Sterg... ${++facut}/${nrOp}`);
   try{
-    await rpc('edit_creeaza_leaf', { _parinte:n.nod_id, _denumire:'temporar pentru stergere' });
-    await rpc('edit_colapseaza_capitol', { _capitol:n.nod_id });
-    const r = await rpc('edit_sterge_leafuri', { _leafuri:[n.nod_id] });
-    toast(r);
+    // de jos in sus: intai leafurile nivelului, apoi capitolele lui (deja golite)
+    for(let i=niveluri.length-1; i>=0; i--){
+      const lf = niveluri[i].filter(x=>x.tip==='leaf').map(x=>x.nod_id);
+      for(const lot of bucati(lf, 50)){ await rpc('edit_sterge_leafuri',{_leafuri:lot}); pas(); }
+      for(const c of niveluri[i].filter(x=>x.tip!=='leaf')){ await stergeCapitolGol(c.nod_id); facut+=3; }
+    }
+    await stergeCapitolGol(n.nod_id);
+    toast(`Sters: ${esc(n.denumire)}${toti.length?` si ${toti.length} noduri de sub el`:''}.`);
+    toti.forEach(x=> delete nodeCache[x.nod_id]);
     delete nodeCache[n.nod_id];
     if(n.parinte_id){ delete nodeCache[n.parinte_id]; await structReincarcaSub(n.parinte_id); showDetail(n.parinte_id); }
     else await structRefreshArbore();
-  }catch(err){ toast('Nu am putut sterge: '+err.message, true); }
+  }catch(err){
+    toast('Stergere oprita dupa '+facut+' pasi: '+err.message+' — restul subarborelui a ramas pe loc.', true);
+    await structRefreshArbore();
+  }
 }
 
 async function structColapsaza(nodId, denum){
