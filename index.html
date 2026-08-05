@@ -977,9 +977,24 @@ function modalEditeazaTexte(n){
 const nomPane = document.getElementById('nom-pane');
 const treePane = document.getElementById('tree-pane');
 let NOMSORT = { p:'p_id', prm:'prm_id' };
-const NOMPAG = 200;                       // randuri pe pagina
-let NOMPAGE = { p:0, prm:0 };             // pagina curenta (0-based), per nomenclator
-function nomKey(){ return MODE==='p' ? 'p' : 'prm'; }
+// Randuri pe pagina. Sub 200 nu e doar o preferinta: fiecare rand de parametru desenaza
+// si chip-urile de valori, deci 200 de randuri inseamna cateva mii de elemente in DOM si
+// pagina se misca greu. Se poate schimba din selectorul de langa paginator si se tine minte.
+const PASI_PAG = [25, 50, 100, 200];
+let NOMPAG = parseInt(localStorage.getItem('quadra_pag'), 10) || 50;
+if(!PASI_PAG.includes(NOMPAG)) NOMPAG = 50;
+let NOMPAGE = { p:0, prm:0, goluri:0 };   // pagina curenta (0-based), per lista
+function nomKey(){ return MODE==='p' ? 'p' : (MODE==='goluri' ? 'goluri' : 'prm'); }
+function seteazaPas(n){
+  NOMPAG = n; localStorage.setItem('quadra_pag', String(n));
+  NOMPAGE = { p:0, prm:0, goluri:0 };
+  nomCacheReset(); renderNomTable(curSearch());
+}
+// id-ul incepe cu "pg-" ca sa fie rescris in "pgb-" pe copia de jos a paginatorului
+function selectPasHTML(){
+  return `<select id="pg-pas" class="btn mini" title="cate randuri se aduc odata">${
+    PASI_PAG.map(n=>`<option value="${n}"${n===NOMPAG?' selected':''}>${n} / pagina</option>`).join('')}</select>`;
+}
 function setMode(m){
   MODE = m;
   document.querySelectorAll('.mode-btn').forEach(b=> b.classList.toggle('active', b.dataset.m===m));
@@ -993,7 +1008,7 @@ function setMode(m){
     : (m==='p' ? 'Cauta P dupa denumire, sinonim sau PU-...'
     : (m==='goluri' ? 'Cauta in goluri: denumire, cod, nota...' : 'Cauta parametru dupa denumire, valoare sau PRM-...'));
   if(t){ searchResults.style.display='none'; treeRoot.style.display='block'; nomPane.innerHTML=''; }
-  else { EXPANDED=null; NOMPAGE={p:0,prm:0}; renderNomTable(''); }
+  else { EXPANDED=null; NOMPAGE={p:0,prm:0,goluri:0}; renderNomTable(''); }
 }
 document.querySelectorAll('.mode-btn').forEach(b=> b.onclick = ()=> setMode(b.dataset.m));
 function curSearch(){ return document.getElementById('search').value.trim(); }
@@ -1121,8 +1136,12 @@ async function renderGoluri(v){
     const cats = {};
     GOLURI.forEach(g=> cats[g.categorie] = (cats[g.categorie]||0)+1);
     const term = (v||'').toLowerCase();
-    let rows = GOLURI.filter(g=> (!GOLFILT || g.categorie===GOLFILT));
-    if(term) rows = rows.filter(g=> (g.denumire+' '+g.detaliu+' '+g.cheie+' '+g.subcategorie+' '+g.context).toLowerCase().includes(term));
+    let toate = GOLURI.filter(g=> (!GOLFILT || g.categorie===GOLFILT));
+    if(term) toate = toate.filter(g=> (g.denumire+' '+g.detaliu+' '+g.cheie+' '+g.subcategorie+' '+g.context).toLowerCase().includes(term));
+    // si aici se desena tot (pana la 2.000 de randuri intr-un singur tabel); taiem pe pagini
+    const nrPag = Math.max(1, Math.ceil(toate.length/NOMPAG));
+    const pg = Math.min(NOMPAGE.goluri||0, nrPag-1), de = pg*NOMPAG;
+    const rows = toate.slice(de, de+NOMPAG);
 
     const chips = `<div class="golchip${GOLFILT?'':' on'}" data-c="">Toate <b>${GOLURI.length}</b></div>` +
       Object.entries(cats).map(([c,n])=>`<div class="golchip${GOLFILT===c?' on':''}" data-c="${esc(c)}">${esc(c)} <b>${n}</b></div>`).join('');
@@ -1140,13 +1159,32 @@ async function renderGoluri(v){
         <td class="gol-det">${esc(g.context)}</td></tr>`;
     }).join('');
 
+    const eUltima = pg >= nrPag-1;
+    const pagHTML = `<div class="nompag">
+        <button class="btn mini" id="gp-first" ${pg<=0?'disabled':''}>&#171; prima</button>
+        <button class="btn mini" id="gp-prev" ${pg<=0?'disabled':''}>&#8249; inapoi</button>
+        <span class="pg-info">pagina <b>${pg+1}</b> din <b>${nrPag}</b>${toate.length?` · randurile ${de+1}-${Math.min(de+NOMPAG,toate.length)}`:''}</span>
+        <button class="btn mini" id="gp-next" ${eUltima?'disabled':''}>inainte &#8250;</button>
+        <button class="btn mini" id="gp-last" ${eUltima?'disabled':''}>ultima &#187;</button>
+        ${selectPasHTML().replace('id="pg-pas"','id="gp-pas"')}
+      </div>`;
     nomPane.innerHTML = `<div class="golfilt">${chips}</div><div class="golnote">${esc(expl)}</div>`
-      + `<div class="nomtool"><span class="sr-count">${rows.length} intrari${term?' care contin "'+esc(v)+'"':''}</span>
+      + `<div class="nomtool"><span class="sr-count">${toate.length} intrari${term?' care contin "'+esc(v)+'"':''}</span>
          <span class="hint" style="margin:0">lista se discuta si se inchide pe masura ce se iau deciziile de structura</span></div>`
+      + pagHTML
       + `<table class="ntab"><thead>${head}</thead><tbody>${body}</tbody></table>`
-      + (rows.length ? '' : '<div class="loading" style="padding:16px">nimic gasit</div>');
+      + (rows.length ? pagHTML.replace(/id="gp-/g,'id="gpb-') : '<div class="loading" style="padding:16px">nimic gasit</div>');
 
-    nomPane.querySelectorAll('.golchip').forEach(c=> c.onclick = ()=>{ GOLFILT = c.dataset.c; renderGoluri(curSearch()); });
+    const goPag = n => { NOMPAGE.goluri = Math.max(0, Math.min(nrPag-1, n)); renderGoluri(curSearch()); };
+    ['','b'].forEach(sf=>{
+      const g = id => document.getElementById('gp'+sf+'-'+id);
+      if(g('first')) g('first').onclick = ()=> goPag(0);
+      if(g('prev'))  g('prev').onclick  = ()=> goPag(pg-1);
+      if(g('next'))  g('next').onclick  = ()=> goPag(pg+1);
+      if(g('last'))  g('last').onclick  = ()=> goPag(nrPag-1);
+      if(g('pas'))   g('pas').onchange  = ev => seteazaPas(+ev.target.value);
+    });
+    nomPane.querySelectorAll('.golchip').forEach(c=> c.onclick = ()=>{ GOLFILT = c.dataset.c; NOMPAGE.goluri = 0; renderGoluri(curSearch()); });
     nomPane.querySelectorAll('.gol-link').forEach(el=> el.onclick = ()=>{
       if(el.dataset.go==='p') gotoNom('p', el.dataset.id);
       else { setMode('tree'); showDetail(el.dataset.id); }
@@ -1213,6 +1251,7 @@ async function renderNomTable(v){
         <span class="pg-info">pagina <b>${pg+1}</b> din <b>${nrPag}</b>${total?` · randurile ${de+1}-${Math.min(de+NOMPAG,total)}`:''}</span>
         <button class="btn mini" id="pg-next" ${eUltima?'disabled':''}>inainte &#8250;</button>
         <button class="btn mini" id="pg-last" ${eUltima?'disabled':''}>ultima &#187;</button>
+        ${selectPasHTML()}
         <span style="flex:1"></span>
         <button class="btn mini" id="pg-json" title="Descarca TOATE randurile care corespund filtrului curent, nu doar pagina afisata">&#8681; descarca JSON</button>
       </div>`;
@@ -1225,6 +1264,7 @@ async function renderNomTable(v){
       if(g('prev'))  g('prev').onclick  = ()=> goPag(pg-1);
       if(g('next'))  g('next').onclick  = ()=> goPag(pg+1);
       if(g('last'))  g('last').onclick  = ()=> goPag(nrPag-1);
+      if(g('pas'))   g('pas').onchange  = ev => seteazaPas(+ev.target.value);
       // Exportul e singurul loc care mai are nevoie de TOT setul: se aduce abia la click,
       // prin cursor, si numai pentru filtrul curent. Descrierea vine din alta vedere si se
       // lipeste tot aici, la salvare.
@@ -1672,7 +1712,7 @@ let searchTimer=null;
 searchBox.addEventListener('input', ()=>{
   clearTimeout(searchTimer);
   const v=searchBox.value.trim();
-  if(MODE!=='tree'){ NOMPAGE={p:0,prm:0}; searchTimer=setTimeout(()=>renderNomTable(v), 280); return; }
+  if(MODE!=='tree'){ NOMPAGE={p:0,prm:0,goluri:0}; searchTimer=setTimeout(()=>renderNomTable(v), 280); return; }
   if(v.length<3){ searchResults.style.display='none'; treeRoot.style.display='block'; return; }
   searchTimer=setTimeout(()=>doSearch(v), 300);
 });
