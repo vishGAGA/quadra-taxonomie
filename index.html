@@ -554,7 +554,7 @@ function cereModStergere(ce, n, lista, disp){
       }
       warn.innerHTML = sel.value==='definitiv'
         ? '<b style="color:var(--rosu,#f87171)">Atentie:</b> stergerea definitiva nu se poate anula, nici din pagina, nici prin undo.'
-        : 'Perechile care ar ramane sub 2 parametri blocheaza operatiunea (regula E3).';
+        : 'Retragerea scoate P-ul de pe leafuri si din perechi; el ramane in dictionar cu status retras.';
     };
     m.querySelectorAll('input[name=delmod]').forEach(r=> r.addEventListener('change', upd));
     upd();
@@ -583,10 +583,11 @@ function wireSearch(inputEl, resultsEl, searchFn, rowHTML, onPick){
   });
   inputEl.focus();
 }
-// multi-picker de parametri (>=2), cu optiunea de a defini PRM noi (create la confirmare)
+// multi-picker de parametri, cu optiunea de a defini PRM noi (create la confirmare).
+// Nu mai exista minim: un P poate ramane si cu un singur parametru sau fara niciunul.
 function pickParams(titlu, onDone){
   const m = showModal(titlu, `
-    <div class="hint">Alege minim 2 parametri pentru acest P: cauta in dictionar si da click, sau defineste unul nou. Parametrii noi se creeaza la confirmare.</div>
+    <div class="hint">Alege parametrii pentru acest P: cauta in dictionar si da click, sau defineste unul nou. Parametrii noi se creeaza la confirmare. Nu exista numar minim &mdash; poti atasa P-ul si fara niciun parametru.</div>
     <div class="chips" id="mp-chips"></div>
     <label>Cauta parametru existent</label>
     <input type="text" id="mp-q" placeholder="ex: material, diametru, culoare...">
@@ -623,7 +624,7 @@ function pickParams(titlu, onDone){
   };
   m.querySelector('#mp-cancel').onclick = closeModal;
   m.querySelector('#mp-ok').onclick = async ()=>{
-    if(chips.length<2){ toast('Alege minim 2 parametri (regula E3).', true); return; }
+    if(!chips.length && !confirm('Nu ai ales niciun parametru. Atasez P-ul fara parametri?')) return;
     const ids=[];
     try{
       for(const c of chips){
@@ -764,15 +765,17 @@ async function showDetail(id){
       const plist = document.getElementById('p-list');
       if(!ps.length){ plist.innerHTML='<div class="loading">fara P-uri</div>'; return; }
       plist.innerHTML='';
-      ps.forEach(p=>{
+      ps.forEach((p,idx)=>{
         const item=document.createElement('div'); item.className='p-item';
         item.innerHTML=`<div class="p-head"><span class="p-caret">&#9654;</span>
           <span class="p-id">${esc(p.p_id)}</span><span>${esc(p.denumire)}</span>
-          <span class="p-um">${esc(p.um||'')}</span>${EDIT?`<button class="btn mini p-ren" title="redenumeste P-ul (se schimba pe TOATE leafurile)">&#9998;</button><button class="btn mini danger p-del" title="scoate P-ul de pe acest leaf">&#10005; scoate</button>`:''}</div>
+          <span class="p-um">${esc(p.um||'')}</span>${EDIT?`<button class="btn mini p-up" title="muta P-ul mai sus in lista leaf-ului"${idx===0?' disabled':''}>&#9650;</button><button class="btn mini p-dn" title="muta P-ul mai jos in lista leaf-ului"${idx===ps.length-1?' disabled':''}>&#9660;</button><button class="btn mini p-ren" title="redenumeste P-ul (se schimba pe TOATE leafurile)">&#9998;</button><button class="btn mini danger p-del" title="scoate P-ul de pe acest leaf">&#10005; scoate</button>`:''}</div>
           ${dmap[p.p_id]?`<div class="p-desc" title="${esc(dmap[p.p_id])}">${esc(dmap[p.p_id])}</div>`:''}
           <div class="prm-list"><div class="loading">...</div></div>`;
         const head=item.querySelector('.p-head'), list=item.querySelector('.prm-list'), caret=item.querySelector('.p-caret');
         if(EDIT){
+          item.querySelector('.p-up').addEventListener('click', (e)=>{ e.stopPropagation(); mutaP(id, p.p_id, 'sus'); });
+          item.querySelector('.p-dn').addEventListener('click', (e)=>{ e.stopPropagation(); mutaP(id, p.p_id, 'jos'); });
           item.querySelector('.p-ren').addEventListener('click', (e)=>{
             e.stopPropagation();
             modalInput('Redenumeste '+p.p_id,
@@ -820,7 +823,8 @@ async function renderPrms(list, leafId, pId){
     if(EDIT) inner += `<div class="prm-addbar">
         <button class="btn mini" data-act="add-exist">+ parametru existent</button>
         <button class="btn mini primary" data-act="add-new">+ parametru NOU</button>
-        <button class="btn mini" data-act="gen-prm" title="propune parametrii folositi de acest P in alte contexte, cu verificare anti-dubluri">&#9881; genereaza parametri</button></div>`;
+        <button class="btn mini" data-act="gen-prm" title="propune parametrii folositi de acest P in alte contexte, cu verificare anti-dubluri">&#9881; genereaza parametri</button>
+        <button class="btn mini" data-act="copy-prm" title="ia parametrii aceluiasi P de pe alt leaf, ca sa nu-l lucrezi de doua ori">&#8646; copiaza parametrii de pe alt leaf</button></div>`;
     list.innerHTML = inner;
     if(!EDIT) return;
     // Valorile devin chip-uri editabile si in arbore: click = redenumeste, x = sterge valoarea.
@@ -847,6 +851,8 @@ async function renderPrms(list, leafId, pId){
               });
           } else if(act==='gen-prm'){
             genPrm(leafId, pId, list);
+          } else if(act==='copy-prm'){
+            copiazaPrmDePeAltLeaf(leafId, pId, list);
           } else if(act==='add-exist'){
             const m = showModal('Adauga parametru existent pe '+pId, `
               <label>Cauta in dictionarul PRM</label><input type="text" id="ap-q" placeholder="denumire sau PRM-...">
@@ -880,10 +886,154 @@ async function renderPrms(list, leafId, pId){
     });
   }catch(err){ list.innerHTML='<div class="loading">eroare</div>'; }
 }
+// ---- Reordonarea P-urilor in cadrul unui leaf ----
+// Ordinea sta in categorii.leaf_p.pozitie. Nu o schimbam din JS: serverul interschimba cu
+// vecinul si renumeroteaza contiguu 1..n (edit_muta_p_pe_leaf), sub acelasi PIN ca restul
+// scrierilor. Daca migrarea nu e rulata inca, spunem exact ce lipseste in loc sa aruncam
+// eroarea bruta a PostgREST.
+const MSG_MIGRARE_ORDINE = 'Ruleaza migrari/fara_minim_parametri_si_reordonare.sql in SQL Editor-ul Supabase, apoi reincearca.';
+async function mutaP(leafId, pId, dir){
+  try{
+    const r = await rpc('edit_muta_p_pe_leaf', {_leaf:leafId, _p:pId, _directie:dir});
+    toast(r); showDetail(leafId);
+  }catch(err){
+    toast(eRPCLipsa(err) ? 'Mutarea P-urilor nu e activata inca in baza. '+MSG_MIGRARE_ORDINE : err.message, true);
+  }
+}
+
+// ---- Copierea parametrilor aceluiasi P de pe alt leaf ----
+// Acelasi P apare pe zeci de leafuri si aproape mereu cu acelasi set de parametri. In loc sa
+// fie ales de la zero de fiecare data, se ia de-a gata de pe o pereche deja lucrata.
+// Adaugarea merge prin edit_gen_aplica_prm (bulk, sare peste ce exista deja, pastreaza
+// maximul de 14); modul "identic cu sursa" scoate in plus ce nu e in sursa, cu
+// edit_sterge_prm_de_pe_pereche. Nimic nu se scrie pana la butonul de aplicare.
+function cmpNodId(a,b){
+  const as=String(a).split('.'), bs=String(b).split('.');
+  for(let i=0;i<Math.max(as.length,bs.length);i++){
+    const x=as[i]||'', y=bs[i]||'', nx=parseInt(x,10), ny=parseInt(y,10);
+    if(!isNaN(nx)&&!isNaN(ny)){ if(nx!==ny) return nx-ny; }
+    else if(x!==y) return x<y?-1:1;
+  }
+  return 0;
+}
+async function copiazaPrmDePeAltLeaf(leafId, pId, list){
+  const m = showModal('Copiaza parametrii &mdash; '+esc(pId)+' pe '+esc(leafId),
+    '<div class="loading">se cauta celelalte leafuri care au acest P...</div>');
+  const body = m.querySelector('.m-body');
+  try{
+    const el = v => encodeURIComponent('eq.'+v);
+    const [acum, toate] = await Promise.all([
+      q(`/viz_leafp_prm?leaf_id=${el(leafId)}&p_id=${el(pId)}&select=prm_id,denumire`),
+      q(`/viz_leafp_prm?p_id=${el(pId)}&select=leaf_id,prm_id,denumire,tip,valori_lista&limit=20000`)
+    ]);
+    const setActual = new Set(acum.map(x=>x.prm_id));
+    const perLeaf = new Map();
+    toate.forEach(r=>{
+      if(r.leaf_id===leafId) return;
+      if(!perLeaf.has(r.leaf_id)) perLeaf.set(r.leaf_id, []);
+      perLeaf.get(r.leaf_id).push(r);
+    });
+    const ids = Array.from(perLeaf.keys());
+    if(!ids.length){
+      body.innerHTML = `<div class="hint">P-ul ${esc(pId)} nu are parametri pe niciun alt leaf &mdash; nu e nimic de copiat. Foloseste "&#9881; genereaza parametri" sau "+ parametru existent".</div>`;
+      return;
+    }
+    // denumirile leafurilor-sursa, in loturi (URL-ul are limita de lungime)
+    const den = {};
+    for(let i=0;i<ids.length;i+=80){
+      const lot = ids.slice(i,i+80);
+      const rows = await q(`/viz_noduri?nod_id=in.(${lot.map(encodeURIComponent).join(',')})&select=nod_id,denumire`);
+      rows.forEach(r=> den[r.nod_id]=r.denumire);
+    }
+    const parinte = leafId.slice(0, leafId.lastIndexOf('.'));
+    ids.sort((a,b)=>{
+      const fa = a.startsWith(parinte+'.')?0:1, fb = b.startsWith(parinte+'.')?0:1;
+      return fa!==fb ? fa-fb : cmpNodId(a,b);
+    });
+
+    function pasAlegeLeaf(){
+      body.innerHTML = `
+        <div class="hint">Acelasi P e pe <b>${ids.length}</b> alte leafuri. Alege leaful de la care iei setul de parametri &mdash; la pasul urmator poti debifa ce nu vrei. Fratii aceluiasi parinte sunt primii in lista. Perechea curenta are acum <b>${setActual.size}</b> parametri.</div>
+        <label>Filtreaza</label><input type="text" id="cpl-q" placeholder="cod (ARH.01...) sau denumire">
+        <div class="m-results" id="cpl-res"></div>`;
+      const res = body.querySelector('#cpl-res'), inp = body.querySelector('#cpl-q');
+      const randuri = ()=>{
+        const f = inp.value.trim().toLowerCase();
+        const vaz = ids.filter(id=> !f || id.toLowerCase().includes(f) || (den[id]||'').toLowerCase().includes(f)).slice(0,300);
+        res.innerHTML = vaz.length ? vaz.map(id=>{
+          const set = perLeaf.get(id);
+          const identic = set.length===setActual.size && set.every(r=> setActual.has(r.prm_id));
+          const nou = set.filter(r=> !setActual.has(r.prm_id)).length;
+          return `<div class="sr-item" data-leaf="${esc(id)}"><span class="node-id">${esc(id)}</span><span>${esc(den[id]||'')}</span>
+            <span class="prm-tip">${set.length} parametri</span>
+            <span class="nom-cnt">${identic ? 'identic cu ce ai' : (nou+' noi fata de perechea curenta')}</span></div>`;
+        }).join('') : '<div class="hint">nimic gasit</div>';
+        res.querySelectorAll('.sr-item').forEach(elr=> elr.onclick = ()=> pasAlegeParametri(elr.dataset.leaf));
+      };
+      inp.addEventListener('input', randuri);
+      randuri();
+      setTimeout(()=>inp.focus(), 60);
+    }
+
+    function pasAlegeParametri(sursa){
+      const set = perLeaf.get(sursa);
+      body.innerHTML = `
+        <div class="hint">Sursa: <b>${esc(sursa)}</b> ${esc(den[sursa]||'')}. Bifeaza parametrii pe care ii vrei si pe <b>${esc(leafId)}</b>. Cei deja prezenti pe perechea curenta sunt marcati &mdash; raman oricum.</div>
+        <div id="cpl-list">${set.map((r,i)=>`
+          <label style="display:flex; gap:9px; align-items:flex-start; padding:7px 9px; border-radius:8px; cursor:pointer; margin-bottom:4px">
+            <input type="checkbox" data-i="${i}" checked style="margin-top:3px; accent-color:var(--accent); width:14px; height:14px;">
+            <span style="flex:1; font-size:12.5px; line-height:1.5"><span class="prm-id">${esc(r.prm_id)}</span> <b>${esc(r.denumire)}</b> <span class="prm-tip">${esc(r.tip||'')}</span>${setActual.has(r.prm_id)?' <span class="nom-cnt">deja pe pereche</span>':''}
+              <div class="vchips" style="margin-top:4px">${chipsHTML(r.valori_lista, false)}</div></span>
+          </label>`).join('')}</div>
+        <label>Cum se aplica</label>
+        <div style="font-size:12.5px; line-height:1.9">
+          <label style="cursor:pointer"><input type="radio" name="cplmod" value="add" checked style="accent-color:var(--accent)"> adauga doar ce lipseste (nu se scoate nimic)</label><br>
+          <label style="cursor:pointer"><input type="radio" name="cplmod" value="repl" style="accent-color:var(--accent)"> fa perechea <b>identica cu sursa</b> (scoate parametrii care nu sunt bifati mai sus)</label>
+        </div>`;
+      const foot = m.querySelector('.m-foot') || (()=>{ const d=document.createElement('div'); d.className='m-foot'; m.appendChild(d); return d; })();
+      foot.innerHTML = `<button class="btn" id="cpl-back">&laquo; alt leaf</button><button class="btn primary" id="cpl-ok"></button>`;
+      const ok = foot.querySelector('#cpl-ok');
+      const alese = ()=> Array.from(body.querySelectorAll('#cpl-list input:checked')).map(c=> set[+c.dataset.i]);
+      const upd = ()=>{
+        const a = alese(), noi = a.filter(r=> !setActual.has(r.prm_id)).length;
+        const repl = body.querySelector('input[name=cplmod]:checked').value==='repl';
+        const scos = repl ? Array.from(setActual).filter(id=> !a.some(r=>r.prm_id===id)).length : 0;
+        ok.textContent = 'aplica (+'+noi+(scos?' / -'+scos:'')+')';
+        ok.disabled = !noi && !scos;
+      };
+      body.querySelectorAll('#cpl-list input, input[name=cplmod]').forEach(c=> c.addEventListener('change', upd));
+      upd();
+      foot.querySelector('#cpl-back').onclick = ()=>{ foot.innerHTML=''; pasAlegeLeaf(); };
+      ok.onclick = async ()=>{
+        const a = alese();
+        const deAdaugat = a.filter(r=> !setActual.has(r.prm_id)).map(r=>r.prm_id);
+        const repl = body.querySelector('input[name=cplmod]:checked').value==='repl';
+        const deScos = repl ? Array.from(setActual).filter(id=> !a.some(r=>r.prm_id===id)) : [];
+        ok.disabled = true; ok.textContent = 'se scrie...';
+        try{
+          if(deAdaugat.length) await rpc('edit_gen_aplica_prm', {_leaf:leafId, _p:pId, _prm_ids:deAdaugat});
+          let refuzate = 0;
+          for(const prm of deScos){
+            try{ await rpc('edit_sterge_prm_de_pe_pereche', {_leaf:leafId, _p:pId, _prm:prm}); }
+            catch(e){ refuzate++; }
+          }
+          closeModal();
+          toast('Copiat de pe '+sursa+': +'+deAdaugat.length+' parametri'+(deScos.length?(', -'+(deScos.length-refuzate)):'')+
+                (refuzate?(' ('+refuzate+' nu au putut fi scosi — vezi regula de minim din baza)'):''));
+          list.dataset.loaded=''; await renderPrms(list, leafId, pId);
+        }catch(err){ toast(err.message, true); ok.disabled=false; upd(); }
+      };
+    }
+    pasAlegeLeaf();
+  }catch(err){
+    body.innerHTML = '<div class="hint">Eroare: '+esc(err.message)+'</div>';
+  }
+}
+
 // ---- Modale P pe leaf ----
 function modalAtaseazaP(leafId){
   const m = showModal('Ataseaza P existent pe '+leafId, `
-    <div class="hint">Cauta P-ul in dictionar. La atasare, parametrii se mostenesc automat de la cel mai folosit leaf al P-ului; daca P-ul nu are parametri de mostenit, ti se cere sa alegi minim 2.</div>
+    <div class="hint">Cauta P-ul in dictionar. La atasare, parametrii se mostenesc automat de la cel mai folosit leaf al P-ului; daca P-ul nu are parametri de mostenit, ti se cere sa-i alegi (poti si sa nu alegi niciunul).</div>
     <label>Cauta P</label><input type="text" id="xp-q" placeholder="denumire, sinonim sau PU-...">
     <div class="m-results" id="xp-res"></div>`);
   wireSearch(m.querySelector('#xp-q'), m.querySelector('#xp-res'),
@@ -907,7 +1057,7 @@ function modalAtaseazaP(leafId){
 }
 function modalCreeazaP(leafId){
   const m = showModal('Creeaza P NOU pe '+leafId, `
-    <div class="hint">Anti-dublura: daca exista deja un P echivalent, baza te refuza si iti spune ID-ul — foloseste atunci "ataseaza P existent". Dupa completare alegi minim 2 parametri.</div>
+    <div class="hint">Anti-dublura: daca exista deja un P echivalent, baza te refuza si iti spune ID-ul — foloseste atunci "ataseaza P existent". Dupa completare alegi parametrii (oricati, inclusiv niciunul).</div>
     <label>Denumire P</label><input type="text" id="np2-den" placeholder="ex: Grila ventilatie subsol PVC">
     <label>UM</label><select id="np2-um"><option>buc</option><option>mp</option><option>ml</option><option>mc</option><option>kg</option><option>set</option></select>
     <label>Sinonime (optional, separate cu ; )</label><input type="text" id="np2-sin">`,
@@ -1444,7 +1594,7 @@ async function renderPExp(td, pId){
     });
     if(!EDIT) return;
     pl.querySelectorAll('[data-act="pdel"]').forEach(b=> b.onclick = async ()=>{
-      if(!confirm(`Scot parametrul ${b.dataset.prm} de pe TOATE perechile lui ${d.p_id}?\n(perechile care ar ramane sub 2 parametri sunt sarite)`)) return;
+      if(!confirm(`Scot parametrul ${b.dataset.prm} de pe TOATE perechile lui ${d.p_id}?\n(se scoate de peste tot; nu mai exista minim de parametri pe pereche)`)) return;
       try{ toast(await rpc('edit_p_sterge_prm_global',{_p:d.p_id,_prm:b.dataset.prm})); refreshNom(pId); }catch(err){ toast(err.message,true); }
     });
     pl.querySelectorAll('[data-act="pren"]').forEach(b=> b.onclick = ()=>
@@ -1550,7 +1700,7 @@ async function renderPrmExp(td, prmId){
       el.onclick = e=>{ if(e.target.closest('button')) return; gotoNom('p', pid); };
       const del = el.querySelector('.xr-del');
       if(del) del.onclick = async ()=>{
-        if(!confirm(`Scot ${d.prm_id} de pe TOATE perechile lui ${pid}?\n(perechile care ar ramane sub 2 parametri sunt sarite)`)) return;
+        if(!confirm(`Scot ${d.prm_id} de pe TOATE perechile lui ${pid}?\n(se scoate de peste tot; nu mai exista minim de parametri pe pereche)`)) return;
         try{ toast(await rpc('edit_p_sterge_prm_global',{_p:pid,_prm:d.prm_id})); refreshNom(prmId); }catch(err){ toast(err.message,true); }
       };
     });
@@ -1597,7 +1747,7 @@ function cautaLeafuri(v){
 const rowLeaf = r=>`<div class="sr-item" style="flex-wrap:wrap"><span class="node-id">${esc(r.nod_id)}</span><span><b>${esc(r.denumire)}</b><div class="hint" style="margin:2px 0 0">${esc(r.lant_complet||'')}</div></span></div>`;
 function modalAtaseazaLeafPeP(pId){
   const m = showModal('Ataseaza '+esc(pId)+' pe un leaf', `
-    <div class="hint">Cauta leaf-ul dupa denumire sau ID. Parametrii perechii se mostenesc automat de la cel mai folosit leaf al P-ului; daca P-ul nu are de unde mosteni, ti se cere sa alegi minim 2.</div>
+    <div class="hint">Cauta leaf-ul dupa denumire sau ID. Parametrii perechii se mostenesc automat de la cel mai folosit leaf al P-ului; daca P-ul nu are de unde mosteni, ti se cere sa-i alegi (poti si sa nu alegi niciunul).</div>
     <label>Cauta leaf</label><input type="text" id="lf-q" placeholder="denumire sau ID (ex: ARH.03...)">
     <div class="m-results" id="lf-res"></div>`);
   wireSearch(m.querySelector('#lf-q'), m.querySelector('#lf-res'),
