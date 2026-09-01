@@ -180,27 +180,6 @@
   .vadd .valprev{flex-basis:100%; margin-top:0;}
   #pin-overlay{display:none; position:fixed; inset:0; background:rgba(2,6,23,.72); z-index:70; align-items:flex-start; justify-content:center; padding:120px 16px;}
   #pin-overlay.open{display:flex;}
-  /* ---- Faze determinante / program de control al calitatii ---- */
-  .faze-wrap{overflow-x:auto;}
-  table.faze{width:100%; border-collapse:collapse; font-size:12.5px; min-width:600px;}
-  table.faze th, table.faze td{border:1px solid var(--border); padding:6px 6px; vertical-align:top; text-align:left;}
-  table.faze td.act{padding:4px 2px; white-space:nowrap;}
-  table.faze td.act .btn.mini{padding:1px 4px; margin:0 1px;}
-  table.faze thead th{background:var(--panel2); color:var(--muted); font-size:11px; font-weight:600; text-align:center; white-space:nowrap;}
-  table.faze td.c, table.faze th.c{text-align:center; white-space:nowrap;}
-  table.faze tr.det td{background:rgba(251,191,36,.07);}
-  table.faze tr.det td.faza-den{border-left:3px solid var(--amber);}
-  .faza-den b{font-weight:600;}
-  .faza-meta{color:var(--muted); font-size:11.5px; margin-top:3px;}
-  .faza-doc{font-size:10.5px; padding:2px 6px; border-radius:9px; background:#0b2b3a; color:var(--accent); white-space:nowrap;}
-  .faza-doc.fd{background:#3a2a05; color:var(--amber);}
-  .vine{color:var(--green); font-weight:700;}
-  .nuvine{color:#475569;}
-  .faza-tip{font-size:10px; text-transform:uppercase; letter-spacing:.4px; color:var(--amber);}
-  .faza-src{font-size:10.5px; color:var(--leaf); margin-top:3px;}
-  .faze-legenda{font-size:11.5px; color:var(--muted); margin-top:8px; line-height:1.6;}
-  .faze-actiuni{display:flex; gap:6px; align-items:center; margin-bottom:8px; flex-wrap:wrap;}
-  .faze-rez{font-size:11.5px; color:var(--muted); margin-left:auto;}
   ::-webkit-scrollbar{width:10px;} ::-webkit-scrollbar-thumb{background:#334155; border-radius:6px;} ::-webkit-scrollbar-track{background:transparent;}
   @media (max-width:860px){ main{flex-direction:column;} #tree-pane{width:100%; height:45%; border-right:none; border-bottom:1px solid var(--border);} }
 </style>
@@ -769,17 +748,10 @@ async function showDetail(id){
     const golP = '<span class="hint" style="margin:0">necompletat — activeaza Editare si apasa "editeaza textele"</span>';
     html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
     html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
-    // Fazele se intocmesc pe FAMILIE (ele acopera leafurile de sub ea). Pe un leaf aratam
-    // programul familiei parinte, read-only, cu randurile care il privesc marcate.
-    const fazeNod = n.tip==='familie' ? n.nod_id : (n.tip==='leaf' ? n.parinte_id : null);
-    if(fazeNod) html += `<div class="section"><h3>Faze determinante si faze de control${
-      n.tip==='leaf' ? ' <span class="hint" style="margin:0">&mdash; programul familiei</span>' : ''
-      }</h3><div id="faze-box"><div class="loading">se incarca...</div></div></div>`;
 
     if(n.tip==='leaf'){
       html += `<div class="section"><h3>P-uri (lista de cantitati)</h3><div id="p-editbar"></div><div id="p-list"><div class="loading">se incarca...</div></div></div>`;
       detail.innerHTML = html;
-      if(fazeNod) renderFaze(fazeNod, n);
       if(EDIT){
         const bar=document.getElementById('p-editbar'); bar.className='editbar';
         bar.innerHTML = `<button class="btn" id="add-p-exist">+ ataseaza P existent</button><button class="btn primary" id="add-p-new">+ creeaza P nou</button><button class="btn" id="gen-p" title="propune P-urile pe care fratii acestui leaf le au si el nu">&#9881; genereaza P-uri</button>`;
@@ -830,170 +802,9 @@ async function showDetail(id){
       });
     } else {
       detail.innerHTML = html;
-      if(fazeNod) renderFaze(fazeNod, n);
       if(EDIT){ const bt=document.getElementById('edit-texte'); if(bt) bt.onclick = ()=> modalEditeazaTexte(n); }
     }
   }catch(err){ detail.innerHTML='<div class="placeholder">Eroare: '+esc(err.message)+'</div>'; }
-}
-
-/* ==== FAZE DETERMINANTE / PROGRAM DE CONTROL AL CALITATII ====
-   Fazele stau pe FAMILIE, in categorii.faze, pentru ca o faza acopera mai multe leafuri de sub
-   ea (turnare, acoperire, receptie). Fiecare rand spune si CINE este convocat: beneficiar
-   (diriginte), proiectant, executant, I.S.C. - I.S.C. numai la fazele determinante.
-   Pe un leaf afisam acelasi program, read-only, cu randurile care il privesc marcate: leaful
-   stie astfel la ce faze intra lucrarea lui. Scrierea merge prin RPC-urile edit_faza_*.        */
-const FAZE_DOC = { FD:'proces-verbal de faza determinanta', PVLA:'proces-verbal de lucrari ascunse',
-                   PVRC:'proces-verbal de receptie calitativa', PV:'proces-verbal' };
-
-async function renderFaze(famId, nod){
-  const box = document.getElementById('faze-box');
-  if(!box) return;
-  const eFamilie = nod.nod_id === famId;            // suntem pe familie => se poate edita
-  const leafCurent = nod.tip==='leaf' ? nod.nod_id : null;
-  let randuri;
-  try{
-    randuri = await q(`/viz_faze?nod_id=eq.${encodeURIComponent(famId)}&select=*&order=pozitie`);
-  }catch(err){
-    box.innerHTML = '<div class="hint" style="margin:0">Fazele nu sunt activate inca in baza ('+esc(err.message)+').</div>';
-    return;
-  }
-  const det = randuri.filter(r=>r.tip_faza==='determinanta').length;
-  let h = '';
-  if(EDIT && eFamilie){
-    h += `<div class="faze-actiuni">
-      <button class="btn primary" id="faza-add">+ adauga faza</button>
-      ${randuri.length?'<button class="btn danger" id="faza-clear" title="sterge tot programul familiei">&#10005; goleste programul</button>':''}
-      <span class="faze-rez">${randuri.length} faze &middot; ${det} determinante</span></div>`;
-  } else if(randuri.length){
-    h += `<div class="faze-actiuni"><span class="faze-rez" style="margin-left:0">${randuri.length} faze &middot; ${det} determinante${
-      leafCurent?' &middot; randurile ingrosate privesc acest leaf':''}</span></div>`;
-  }
-  if(!randuri.length){
-    h += `<div class="hint" style="margin:0">Nu exista inca program de faze pentru aceasta familie. ${
-      eFamilie ? 'Genereaza-l cu &#10024; AI prompturi (tip: <b>Faze determinante</b>) sau adauga randurile manual.'
-               : 'Se intocmeste pe familia parinte.'}</div>`;
-    box.innerHTML = h; wireFaze(box, famId, randuri); return;
-  }
-  h += `<div class="faze-wrap"><table class="faze"><thead><tr>
-    <th class="c" style="width:34px">Nr.</th>
-    <th>Faza de lucrare supusa controlului / metoda de control</th>
-    <th class="c" style="width:32px" title="Beneficiar - dirigintele de santier">B</th>
-    <th class="c" style="width:32px" title="Proiectantul lucrarii">P</th>
-    <th class="c" style="width:32px" title="Constructorul / executantul">C</th>
-    <th class="c" style="width:36px" title="Inspectoratul de Stat in Constructii">ISC</th>
-    <th class="c" style="width:50px">Doc.</th>
-    <th style="width:20%">Observatii</th>
-    ${EDIT&&eFamilie?'<th class="c" style="width:84px"></th>':''}</tr></thead><tbody>`;
-  randuri.forEach((r,i)=>{
-    const meaLeaf = leafCurent && (r.leafuri_sursa||[]).includes(leafCurent);
-    const pct = v => v ? '<span class="vine">&#9679;</span>' : '<span class="nuvine">&middot;</span>';
-    const doc = (r.document||'PV').toUpperCase();
-    h += `<tr class="${r.tip_faza==='determinanta'?'det':''}"${meaLeaf?' style="font-weight:600"':''}>
-      <td class="c">${r.pozitie}</td>
-      <td class="faza-den">${r.tip_faza==='determinanta'?'<div class="faza-tip">faza determinanta</div>':''}
-        <b>${esc(r.denumire)}</b>
-        ${r.metoda_control?`<div class="faza-meta">${esc(r.metoda_control)}</div>`:''}
-        ${r.alti_participanti?`<div class="faza-meta">mai participa: ${esc(r.alti_participanti)}</div>`:''}
-        ${r.leafuri_sursa&&r.leafuri_sursa.length?`<div class="faza-src">pentru: ${esc(r.leafuri_sursa.join(', '))}</div>`:''}</td>
-      <td class="c">${pct(r.beneficiar)}</td><td class="c">${pct(r.proiectant)}</td>
-      <td class="c">${pct(r.executant)}</td><td class="c">${pct(r.isc)}</td>
-      <td class="c"><span class="faza-doc ${doc==='FD'?'fd':''}" title="${esc(FAZE_DOC[doc]||'')}">${esc(doc)}</span></td>
-      <td>${r.obs?esc(r.obs):''}</td>
-      ${EDIT&&eFamilie?`<td class="c act">
-        <button class="btn mini fz-ed" data-id="${r.id}" title="modifica faza">&#9998;</button>
-        <button class="btn mini fz-up" data-id="${r.id}" title="mai sus"${i===0?' disabled':''}>&#9650;</button>
-        <button class="btn mini fz-dn" data-id="${r.id}" title="mai jos"${i===randuri.length-1?' disabled':''}>&#9660;</button>
-        <button class="btn mini danger fz-del" data-id="${r.id}" title="sterge faza">&#10005;</button></td>`:''}
-    </tr>`;
-  });
-  h += `</tbody></table></div>
-    <div class="faze-legenda"><b>B</b> beneficiar (diriginte) &middot; <b>P</b> proiectant &middot; <b>C</b> constructor &middot;
-      <b>ISC</b> Inspectoratul de Stat in Constructii &nbsp;|&nbsp; <b>&#9679;</b> participa &middot; <b>&middot;</b> nu se convoaca<br>
-      <b>FD</b> proces-verbal de faza determinanta (I.S.C. instiintat, executia nu continua fara el) &middot;
-      <b>PVLA</b> lucrari ascunse &middot; <b>PVRC</b> receptie calitativa &middot; <b>PV</b> proces-verbal</div>`;
-  box.innerHTML = h;
-  wireFaze(box, famId, randuri);
-}
-
-function wireFaze(box, famId, randuri){
-  const reincarca = ()=> showDetail(currentId);
-  const add = box.querySelector('#faza-add');
-  if(add) add.onclick = ()=> modalFaza(famId, null);
-  const clear = box.querySelector('#faza-clear');
-  if(clear) clear.onclick = async ()=>{
-    if(!confirm(`Sterg tot programul de faze al familiei ${famId} (${randuri.length} randuri)?`)) return;
-    try{ toast(await rpc('edit_faze_goleste',{_nod:famId})); reincarca(); }
-    catch(err){ toast(err.message, true); }
-  };
-  box.querySelectorAll('.fz-ed').forEach(b=> b.onclick = ()=>
-    modalFaza(famId, randuri.find(r=> String(r.id)===b.dataset.id)));
-  box.querySelectorAll('.fz-up').forEach(b=> b.onclick = async ()=>{
-    try{ toast(await rpc('edit_faza_muta',{_id:Number(b.dataset.id), _directie:'sus'})); reincarca(); }
-    catch(err){ toast(err.message, true); } });
-  box.querySelectorAll('.fz-dn').forEach(b=> b.onclick = async ()=>{
-    try{ toast(await rpc('edit_faza_muta',{_id:Number(b.dataset.id), _directie:'jos'})); reincarca(); }
-    catch(err){ toast(err.message, true); } });
-  box.querySelectorAll('.fz-del').forEach(b=> b.onclick = async ()=>{
-    const r = randuri.find(x=> String(x.id)===b.dataset.id);
-    if(!confirm('Sterg faza "'+(r?r.denumire:'')+'"?')) return;
-    try{ toast(await rpc('edit_faza_sterge',{_id:Number(b.dataset.id)})); reincarca(); }
-    catch(err){ toast(err.message, true); } });
-}
-
-// Adaugare / modificare a unui rand de faza. r=null => rand nou.
-function modalFaza(famId, r){
-  const v = (x,d)=> (r && r[x]!=null) ? r[x] : d;
-  const ck = (x,d)=> ((r ? !!r[x] : d) ? ' checked' : '');
-  const m = showModal(r?'Modifica faza':'Faza noua &mdash; '+esc(famId), `
-    <label>Denumirea fazei (ce se verifica si in ce moment)</label>
-    <textarea id="fz-den" rows="2" placeholder="Faza premergatoare turnarii betonului in ...">${esc(v('denumire',''))}</textarea>
-    <label>Tipul fazei</label>
-    <select id="fz-tip">
-      <option value="control"${v('tip_faza','control')==='control'?' selected':''}>faza de control (verificare interna)</option>
-      <option value="determinanta"${v('tip_faza','')==='determinanta'?' selected':''}>faza determinanta (se convoaca I.S.C.)</option>
-    </select>
-    <label>Metoda de control</label>
-    <textarea id="fz-met" rows="2" placeholder="masuratori, incercari de laborator, proba de presiune, verificare documente de calitate...">${esc(v('metoda_control',''))}</textarea>
-    <label>Cine este convocat la faza</label>
-    <div style="display:flex; gap:16px; flex-wrap:wrap; margin:4px 0 10px">
-      <label style="display:flex; gap:6px; align-items:center; margin:0"><input type="checkbox" id="fz-b"${ck('beneficiar',true)}> Beneficiar (diriginte)</label>
-      <label style="display:flex; gap:6px; align-items:center; margin:0"><input type="checkbox" id="fz-p"${ck('proiectant',false)}> Proiectant</label>
-      <label style="display:flex; gap:6px; align-items:center; margin:0"><input type="checkbox" id="fz-e"${ck('executant',true)}> Constructor</label>
-      <label style="display:flex; gap:6px; align-items:center; margin:0"><input type="checkbox" id="fz-i"${ck('isc',false)}> I.S.C.</label>
-    </div>
-    <label>Alti participanti (optional)</label>
-    <input type="text" id="fz-alt" placeholder="verificator atestat, RTE, laborator autorizat..." value="${esc(v('alti_participanti',''))}">
-    <label>Documentul incheiat</label>
-    <select id="fz-doc">
-      ${['PV','PVLA','PVRC','FD'].map(d=>`<option value="${d}"${(v('document','PV')||'PV').toUpperCase()===d?' selected':''}>${d} &mdash; ${FAZE_DOC[d]}</option>`).join('')}
-    </select>
-    <label>Observatii (optional)</label>
-    <textarea id="fz-obs" rows="2">${esc(v('obs',''))}</textarea>`,
-    `<button class="btn primary" id="fz-ok">${r?'salveaza':'adauga faza'}</button>`);
-  // La faza determinanta I.S.C. este obligatoriu si documentul este FD - propunem automat.
-  m.querySelector('#fz-tip').onchange = e=>{
-    if(e.target.value==='determinanta'){ m.querySelector('#fz-i').checked = true; m.querySelector('#fz-doc').value = 'FD'; }
-  };
-  m.querySelector('#fz-ok').onclick = async ()=>{
-    const args = {
-      _denumire: m.querySelector('#fz-den').value,
-      _tip_faza: m.querySelector('#fz-tip').value,
-      _metoda:   m.querySelector('#fz-met').value,
-      _beneficiar: m.querySelector('#fz-b').checked,
-      _proiectant: m.querySelector('#fz-p').checked,
-      _executant:  m.querySelector('#fz-e').checked,
-      _isc:        m.querySelector('#fz-i').checked,
-      _alti:     m.querySelector('#fz-alt').value,
-      _document: m.querySelector('#fz-doc').value,
-      _obs:      m.querySelector('#fz-obs').value,
-    };
-    if(!args._denumire.trim()){ toast('Denumirea fazei este obligatorie.', true); return; }
-    try{
-      const msg = r ? await rpc('edit_faza_modifica', Object.assign({_id:r.id}, args))
-                    : await rpc('edit_faza_adauga',   Object.assign({_nod:famId}, args));
-      closeModal(); toast(msg); showDetail(currentId);
-    }catch(err){ toast(err.message, true); }
-  };
 }
 
 // ---- Randare parametri per pereche (cu actiuni in modul editare) ----
@@ -2178,8 +1989,6 @@ const AI_TIPURI = [
   { id:'descriere', nume:'Descriere si Asociere', activ:true },
   { id:'caiete',    nume:'Prompt pentru caiete de sarcini', activ:true },
   { id:'capitole',  nume:'Prompt pentru capitole', activ:true },
-  // Fazele se intocmesc numai pe familii; functia filtreaza singura tip='familie'.
-  { id:'faze',      nume:'Faze determinante (program de control) - doar familii', activ:true },
 ];
 const AI_MODELE = [
   { id:'claude-opus-5',   nume:'Claude Opus 5 (recomandat - calitate maxima)', cost:'~0.04-0.08 $/nod' },
@@ -2380,7 +2189,7 @@ async function renderMatricePane(pane){
       h+=`<tr data-i="${i}" data-copii="${r.are_copii?1:0}" style="${r.are_copii?'cursor:pointer':''}">
         <td style="${td}">${r.are_copii?'<span style="color:var(--muted)">&#9656;</span> ':'<span style="opacity:.3">&#8226;</span> '}<span class="node-id" style="font-size:10px">${esc(r.nod_id)}</span> <b>${esc(r.denumire)}</b> <span style="font-size:10px;color:var(--muted)">${esc(r.tip)}</span></td>
         <td style="${td};min-width:150px">${mxBar(r.desc_completate, r.noduri_total)}</td>
-        <td style="${td};min-width:150px">${mxBar(r.ai_imbunatatite, MX_TIP==='faze' ? (r.familii_total||0) : r.noduri_total)}</td>
+        <td style="${td};min-width:150px">${mxBar(r.ai_imbunatatite, r.noduri_total)}</td>
         <td style="${td};text-align:right">${r.ai_erori?`<span style="color:#f87171">${r.ai_erori}</span>`:'0'}</td>
         <td style="${td};text-align:right">${r.leafuri_total}</td>
         <td style="${td};text-align:right;color:var(--p-col)">${r.nr_p}</td>
