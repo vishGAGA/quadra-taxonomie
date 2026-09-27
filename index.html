@@ -1996,9 +1996,11 @@ const AI_MODELE = [
   { id:'claude-haiku-4-5',nume:'Claude Haiku 4.5 (rapid si ieftin)',           cost:'~0.005-0.01 $/nod' },
 ];
 
-(function aiFaraPin(){
-  try{ if(!localStorage.getItem('quadra_pin')) localStorage.setItem('quadra_pin','x'); }catch(e){}
-  try{ if(typeof PIN!=='undefined' && !PIN) PIN='x'; }catch(e){}
+// 27.09.2026: PIN-ul de editare e verificat din nou in baza (si de ai-descrieri). Nu mai punem PIN-ul fals 'x';
+// il stergem daca a ramas in browser, ca la prima scriere / pornire AI sa fie cerut PIN-ul real.
+(function aiPinReal(){
+  try{ if(localStorage.getItem('quadra_pin')==='x') localStorage.removeItem('quadra_pin'); }catch(e){}
+  try{ if(typeof PIN!=='undefined' && PIN==='x') PIN=''; }catch(e){}
 })();
 
 const AI = { running:false, stop:false, cfg:null, facut:0, total:null, ramase:null, erori:0, ultima:'' };
@@ -2073,6 +2075,7 @@ function aiPill(){
 // ---- Runnerul (independent de modal) ----
 async function aiStart(cfg){
   if(AI.running){ toast('Deja ruleaza. Poti inchide fereastra si te poti plimba.', false); return; }
+  if(!PIN && !(await cerePin())){ toast('Rularea AI cere PIN-ul de editare.', true); return; }
   Object.assign(AI, { running:true, stop:false, cfg, facut:0, total:null, ramase:null, erori:0, ultima:'' });
   aiPill(); aiSyncModal();
   let eroriConsec=0;
@@ -2105,7 +2108,6 @@ function aiSyncModal(){
 }
 
 function aiModal(){
-  if(!PIN){ try{ localStorage.setItem('quadra_pin','x'); }catch(e){} PIN='x'; }
   const nodSel = (typeof currentId!=='undefined' && currentId) ? (nodeCache[currentId]?.denumire || currentId) : null;
   const m = showModal('&#10024; Prompturi oficiale cu AI (Claude)', `
     <div class="hint">Apesi <b>porneste</b> si AI-ul lucreaza in <b>fundal</b>: poti inchide fereastra si te poti plimba prin platforma; el continua (indicatorul din stanga-jos are progres si buton de oprire). Se reia oricand de unde a ramas. Merge de sus in jos, SI pe categorii SI pe leafuri; fiecare nod primeste ca context TOATA structura superioara. O eroare pe un nod NU blocheaza restul - o reiei separat (optiunea "doar erorile").</div>
