@@ -748,6 +748,8 @@ async function showDetail(id){
     const golP = '<span class="hint" style="margin:0">necompletat — activeaza Editare si apasa "editeaza textele"</span>';
     html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
     html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
+    const badgeM = n.masurare_profil?`<span class="badge" style="margin-left:6px">profil: ${esc(n.masurare_profil)}</span>`:'';
+    html += `<div class="section"><h3>Instructiuni de masurare (antemasuratori)${badgeM}</h3><div class="txt">${n.prompt_masurare?esc(n.prompt_masurare):golP}</div></div>`;
 
     if(n.tip==='leaf'){
       html += `<div class="section"><h3>P-uri (lista de cantitati)</h3><div id="p-editbar"></div><div id="p-list"><div class="loading">se incarca...</div></div></div>`;
@@ -1151,13 +1153,15 @@ function modalEditeazaTexte(n){
     <label>Descriere si Asociere (un singur camp — sectiunile raman separate prin titlurile lor)</label>
     <textarea id="tx-da" rows="16"></textarea>
     <label>Prompt pentru caiete de sarcini</label><textarea id="tx-pc" rows="5" placeholder="instructiunile pe baza carora se genereaza caietul de sarcini pentru acest leaf..."></textarea>
-    <label>Prompt pentru capitole</label><textarea id="tx-pk" rows="5" placeholder="instructiunile pe baza carora se genereaza capitolele..."></textarea>`,
+    <label>Prompt pentru capitole</label><textarea id="tx-pk" rows="5" placeholder="instructiunile pe baza carora se genereaza capitolele..."></textarea>
+    <label>Instructiuni de masurare (antemasuratori)</label><textarea id="tx-pm" rows="8" placeholder="cum se masoara acest nod: geometrie, formula, dovezi, verificari, ce nu se masoara aici, Layer 2..."></textarea>`,
     `<button class="btn" id="tx-cancel">renunta</button><button class="btn primary" id="tx-ok">salveaza</button>`);
   m.querySelector('#tx-da').value =
     'CE ESTE:\n'+(n.descriere||'')+'\n\nCONTINE:\n'+(n.include_||'')+'\n\nNU CONTINE:\n'+(n.exclude_||'')+
     '\n\nSINONIME:\n'+(n.sinonime||'')+'\n\nREGULA DE MAPARE:\n'+(n.criteriu_asociere||'');
   m.querySelector('#tx-pc').value = n.prompt_caiete||'';
   m.querySelector('#tx-pk').value = n.prompt_capitole||'';
+  m.querySelector('#tx-pm').value = n.prompt_masurare||'';
   m.querySelector('#tx-cancel').onclick = closeModal;
   m.querySelector('#tx-ok').onclick = async ()=>{
     const val = s => m.querySelector(s).value;
@@ -1178,11 +1182,12 @@ function modalEditeazaTexte(n){
       _criteriu:  chg(buckets['REGULA DE MAPARE'], n.criteriu_asociere)};
     const pc = chg(val('#tx-pc'), n.prompt_caiete);
     const pk = chg(val('#tx-pk'), n.prompt_capitole);
+    const pm = chg(val('#tx-pm'), n.prompt_masurare);
     const areTexte = !(args._descriere===null && args._sinonime===null && args._include===null && args._exclude===null && args._criteriu===null);
-    if(!areTexte && pc===null && pk===null){ toast('Nimic modificat.'); closeModal(); return; }
+    if(!areTexte && pc===null && pk===null && pm===null){ toast('Nimic modificat.'); closeModal(); return; }
     try{
       if(areTexte) toast(await rpc('edit_seteaza_descrieri', args));
-      if(pc!==null || pk!==null) toast(await rpc('edit_seteaza_prompturi', {_nod:n.nod_id, _caiete:pc, _capitole:pk}));
+      if(pc!==null || pk!==null || pm!==null) toast(await rpc('edit_seteaza_prompturi', {_nod:n.nod_id, _caiete:pc, _capitole:pk, _masurare:pm}));
       closeModal();
       nodeCache[n.nod_id] = {nod_id:n.nod_id, parinte_id:n.parinte_id, tip:n.tip, denumire:n.denumire};
       showDetail(n.nod_id);
