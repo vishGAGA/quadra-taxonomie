@@ -749,7 +749,8 @@ async function showDetail(id){
     html += `<div class="section"><h3>Prompt pentru caiete de sarcini</h3><div class="txt">${n.prompt_caiete?esc(n.prompt_caiete):golP}</div></div>`;
     html += `<div class="section"><h3>Prompt pentru capitole</h3><div class="txt">${n.prompt_capitole?esc(n.prompt_capitole):golP}</div></div>`;
     const badgeM = (n.masurare_metoda?`<span class="badge" style="margin-left:6px">metoda: ${esc(n.masurare_metoda)}</span>`:'')
-      + (n.masurare_activitate?`<span class="badge" style="margin-left:6px">${esc(n.masurare_activitate)}</span>`:'');
+      + (n.masurare_activitate?`<span class="badge" style="margin-left:6px">${esc(n.masurare_activitate)}</span>`:'')
+      + (n.masurare_fisa?`<span class="badge" style="margin-left:6px">fisa ${esc(n.masurare_fisa)}</span>`:'');
     html += `<div class="section"><h3>Instructiuni de masurare (antemasuratori)${badgeM}</h3><div class="txt">${n.prompt_masurare?esc(n.prompt_masurare):golP}</div></div>`;
 
     if(n.tip==='leaf'){
